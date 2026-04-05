@@ -7,10 +7,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Recession Radar">
 <meta name="theme-color" content="#0E0D0B">
-<meta name="description" content="Live recession indicator dashboard powered by FRED">
 <title>Recession Radar</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📡</text></svg>">
-<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect fill='%230E0D0B' width='180' height='180' rx='40'/><text x='90' y='128' font-size='100' text-anchor='middle'>📡</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0E0D0B;--sf:rgba(14,13,11,.8);--bd:#1E1D1A;--tx:#E8E6E3;--t2:#AAA;--t3:#777;--t4:#555;--t5:#333;--cl:#00E676;--wa:#90A4AE;--ca:#FFC107;--wn:#FF9100;--st:#FF1744}
@@ -30,8 +28,7 @@
 @keyframes p{0%,100%{opacity:.4}50%{opacity:1}}.lp{animation:p 1.5s ease-in-out infinite}
 .err-box{background:rgba(255,23,68,.07);border:1px solid rgba(255,23,68,.18);border-radius:8px;padding:10px 14px;margin-bottom:16px}
 a{color:var(--ca)}
-.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
-.hcomp-cell{background:rgba(0,0,0,.2);border-radius:6px;padding:6px 8px;text-align:center}
+.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}.hcomp-cell{background:rgba(0,0,0,.2);border-radius:6px;padding:6px 8px;text-align:center}
 .ar-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:9px;letter-spacing:.05em}
 @media(max-width:500px){.mg{grid-template-columns:repeat(2,1fr)}.card{padding:14px 16px}.ga{padding:18px 14px}.hcomp{grid-template-columns:repeat(2,1fr)}}
 </style>
@@ -41,6 +38,7 @@ a{color:var(--ca)}
 <script>
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>u];
 
+/* ═══ INDICATORS (9 total — added CAPE) ═══ */
 const S=[
  {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y − 2Y Treasury Spread",u:"%",
   th:"< −0.3 Inverted (Stress) | 0–0.2 Flat (Caution) | > 0.5 Normal",
@@ -78,19 +76,25 @@ const S=[
   ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
  {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Initial Claims (Weekly)",u:"K",
   th:"< 220K Healthy | 220–260K Normal | 260–300K Elevated | > 300K Warning | > 350K Stress",
-  hi:"Weekly leading indicator. Sustained rise above 260K signals labor market cracking.",
+  hi:"Weekly leading indicator. Sustained rise above 260K = labor market cracking.",
   pre08:346,pre20:282,pre01:305,
   ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",
   divK:true},
+ {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Cyclically Adjusted P/E (P/E 10)",u:"x",isCape:true,
+  th:"< 15 Undervalued | 15–20 Fair | 20–25 Elevated | 25–30 Expensive | 30–38 Very Expensive | > 38 Extreme",
+  hi:"Median: 16.0 | Pre-2000: 44.2 | Pre-2008: 27.3 | Pre-2020: 31.3. High CAPE = further to fall in a crash.",
+  pre08:27.3,pre20:31.3,pre01:44.2,
+  ev:v=>v==null?"unknown":v>38?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
 ];
 
+/* ═══ MARKET CONTEXT (6 cells — no Gold, DXY is back) ═══ */
 const MK=[
  {f:"SP500",n:"S&P 500",p:"",d:0,pk:true},
  {f:"NASDAQCOM",n:"NASDAQ",p:"",d:0,pk:true},
  {f:"DCOILBRENTEU",n:"Brent Oil",p:"$",d:2},
  {f:"DGS10",n:"10Y Yield",p:"",x:"%",d:2},
  {f:"DFF",n:"Fed Funds",p:"",x:"%",d:2},
- {f:"_GOLD_",n:"Gold",p:"$",d:0,isGold:true},
+ {f:"DTWEXBGS",n:"DXY Dollar",p:"",d:1},
 ];
 
 const ST={
@@ -108,8 +112,8 @@ const LV=[
  {x:99,l:"RED",s:"Capital Preservation",c:"#FF1744",st:"Raise cash 40–50%. Exit leverage. Hedge. Survive first, profit later."},
 ];
 
-let st={key:localStorage.getItem("rr6")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
- al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},goldPrice:null,autoRef:null};
+let st={key:localStorage.getItem("rr7")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
+ al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,autoRef:null};
 
 /* ── FRED Fetch ── */
 async function ff(sid,key,lim=24){
@@ -124,25 +128,38 @@ async function ff(sid,key,lim=24){
  throw new Error(sid);
 }
 
-/* ── Gold from alternative sources ── */
-async function fetchGold(){
- // Try multiple free gold price endpoints
- const endpoints=[
-  {url:"https://data-asg.goldprice.org/dbXRates/USD",parse:j=>{if(j&&j.items&&j.items[0])return j.items[0].xauPrice;return null}},
-  {url:"https://api.frankfurter.app/latest?from=XAU&to=USD",parse:j=>{if(j&&j.rates&&j.rates.USD)return j.rates.USD;return null}},
- ];
- for(const ep of endpoints){
+/* ── CAPE Fetch from multpl.com ── */
+async function fetchCAPE(){
+ const urls=["https://www.multpl.com/shiller-pe","https://www.multpl.com/shiller-pe/table/by-month"];
+ for(const url of urls){
   const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
   for(const i of ord){
-   try{const r=await fetch(PX[i](ep.url),{signal:AbortSignal.timeout(10000)});if(!r.ok)continue;
-    const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{continue}
-    const price=ep.parse(j);if(price&&price>100){st.goldPrice=price;return}}catch{continue}}}
- st.goldPrice=null;
+   try{
+    const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});
+    if(!r.ok)continue;
+    const html=await r.text();
+    // Look for the current value in the HTML
+    // multpl.com displays it as "Current Shiller PE Ratio is XX.XX"
+    const patterns=[
+     /Current\s+Shiller\s+PE\s+Ratio[^0-9]*?([\d]{1,2}\.[\d]{1,2})/i,
+     /id="current"[^>]*>([^<]*[\d]+\.[\d]+)/i,
+     /<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+,?\s*\d{4}<\/td>\s*<td[^>]*>([\d.]+)/i,
+     /([\d]{2}\.[\d]{2})\s*<\/td>/,
+    ];
+    for(const pat of patterns){
+     const m=html.match(pat);
+     if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}
+   }catch{continue}}}
+ // Fallback: try GuruFocus
+ try{
+  const r=await fetch(PX[st.px]("https://www.gurufocus.com/economic_indicators/56/sp-500-shiller-cape-ratio"),{signal:AbortSignal.timeout(10000)});
+  if(r.ok){const html=await r.text();const m=html.match(/([\d]{2}\.[\d]{2})/);if(m){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}
+ }catch{}
+ st.cape=null;
 }
 
 function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};
- let ld=null,ud=null,inv=false;
- for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0){inv=true;ld=d[i].date}else if(inv&&!ud)ud=d[i].date}
+ let ld=null,ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0){inv=true;ld=d[i].date}else if(inv&&!ud)ud=d[i].date}
  return{ycUD:ud,ycInv:inv}}
 function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};
  let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}
@@ -152,14 +169,21 @@ function peakPct(d){if(!d||d.length<10)return null;const v=d.map(x=>parseFloat(x
 
 async function loadAll(){
  st.ld=true;st.err=null;render();let ok=0,fl=[];
- for(const s of S){try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}catch{st.d[s.k]=[];fl.push(s.n)}}
- for(const m of MK){if(m.isGold)continue;try{st.mkF[m.f]=await ff(m.f,st.key,m.pk?260:10);st.mk[m.f]=st.mkF[m.f].slice(-5)}catch{st.mk[m.f]=[];st.mkF[m.f]=[]}}
- await fetchGold();
+ for(const s of S){
+  if(s.isCape)continue; // handled separately
+  try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}
+  catch{st.d[s.k]=[];fl.push(s.n)}}
+ for(const m of MK){try{st.mkF[m.f]=await ff(m.f,st.key,m.pk?260:10);st.mk[m.f]=st.mkF[m.f].slice(-5)}catch{st.mk[m.f]=[];st.mkF[m.f]=[]}}
+ await fetchCAPE();
+ // Set CAPE data for card display
+ if(st.cape){st.d["cape"]=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else{st.d["cape"]=[];fl.push("CAPE")}
+ // Evaluate statuses
  for(const s of S){const obs=st.d[s.k]||[];
+  if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}
   if(s.tr){const v=obs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));st.ss[s.k]=s.ev(null,v.length>=2?v[v.length-1]-v[0]:null)}
   else{let l=obs.length?parseFloat(obs[obs.length-1].value):null;if(s.divK&&l)l=l/1000;st.ss[s.k]=s.ev(isNaN(l)?null:l)}}
  st.al={...analyzeYC(st.d.yc||[]),...analyzeSahm(st.d.sa||[])};st.upd=new Date();
- if(ok===0)st.err="No data. Check FRED API key at fred.stlouisfed.org/docs/api/api_key.html";
+ if(ok===0)st.err="No data. Check FRED API key: fred.stlouisfed.org/docs/api/api_key.html";
  else if(fl.length)st.err=`Loaded ${ok}/${S.length}. Missing: ${fl.join(", ")}`;
  st.ld=false;render()
 }
@@ -174,7 +198,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 
 function render(){const a=document.getElementById("app");
  if(!st.key){a.innerHTML=setup();bindSetup();return}
- if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live FRED data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">Loading 8 indicators + market context + gold</p></div>`;return}
+ if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">Loading 9 indicators + 6 market series + CAPE</p></div>`;return}
  a.innerHTML=`<div class="c">${hdr()}${st.err?`<div class="err-box"><p class="m" style="font-size:11px;color:var(--st);line-height:1.5;white-space:pre-line">${st.err}</p></div>`:""}${gauge()}${dynAlert()}${mktB()}<div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div><div style="display:flex;flex-direction:column;gap:10px">${S.map(s=>card(s)).join("")}</div>${leg()}</div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}))}
 
@@ -182,23 +206,22 @@ function setup(){return`<div style="min-height:100vh;display:flex;align-items:ce
  <h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1>
  <p class="m" style="font-size:9px;color:var(--t4);letter-spacing:.12em;margin-bottom:32px">LIVE ECONOMIC INDICATOR DASHBOARD</p>
  <div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left">
- <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">Tracks the Big 8 recession indicators with live FRED data. Free API key required.</p>
+ <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">Tracks 9 recession indicators with live FRED data + Shiller CAPE. Free API key required.</p>
  <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block;text-decoration:underline">Get free FRED API key →</a>
  <div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;display:block;margin-bottom:6px">FRED API KEY</label>
  <input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div>
  <button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div>
- <p class="m" style="font-size:8px;color:var(--t5);margin-top:14px">Bookmark this page or add to home screen for quick access on any device</p>
+ <p class="m" style="font-size:8px;color:var(--t5);margin-top:14px">Add to home screen for app-like access on any device</p>
  </div></div>`}
 function bindSetup(){setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;
  i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});
- const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr6",k);loadAll()}};
+ const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr7",k);loadAll()}};
  b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50)}
 
-function hdr(){const t=st.upd?st.upd.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):"";
- const arOn=!!st.autoRef;
+function hdr(){const t=st.upd?st.upd.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):"";const arOn=!!st.autoRef;
  return`<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--bd);flex-wrap:wrap;gap:8px">
  <div><h1 class="h" style="font-size:20px;font-weight:800;letter-spacing:-.03em">📡 RECESSION RADAR</h1>
- <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px;letter-spacing:.1em">LIVE · ${t} · 8 INDICATORS</p></div>
+ <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px;letter-spacing:.1em">LIVE · ${t} · 9 INDICATORS</p></div>
  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
  <button onclick="toggleAR()" class="m ar-badge" style="background:${arOn?"rgba(0,230,118,.12)":"rgba(85,85,85,.1)"};border:1px solid ${arOn?"rgba(0,230,118,.3)":"#333"};color:${arOn?"var(--cl)":"var(--t4)"};cursor:pointer">${arOn?"⏱ AUTO":"⏱ OFF"}</button>
  <button onclick="loadAll()" class="m" style="padding:5px 12px;background:#1E1D1A;border:1px solid #2A2825;border-radius:6px;color:#AAA;font-size:10px;cursor:pointer">⟳</button>
@@ -231,18 +254,15 @@ function dynAlert(){const ad=st.al;const sahmD=st.d.sa||[],ycD=st.d.yc||[];
  else ms.push(`Yield curve positive at ${yv!=null?yv.toFixed(2)+"%":"N/A"}. No recent inversion in data.`);
  if(ad.sahmD)ms.push(`<strong style="color:var(--ca)">Sahm Rule triggered ${fD(ad.sahmD)}</strong> (peak: ${ad.sahmPk!=null?ad.sahmPk.toFixed(2):"?"}). Current: ${sv!=null?sv.toFixed(2):"N/A"}. ${sv!=null&&sv<.5?"Retreated — only 2 false positives since 1959.":"Signal active."}`);
  else ms.push(`Sahm Rule at ${sv!=null?sv.toFixed(2):"N/A"} — ${sv!=null&&sv>=.3?"approaching":"below"} 0.50 threshold.`);
- if(both)ms.push(`<span style="color:var(--wn)">Both indicators fired — preceded every major recession since 1970. Watch for catalyzing macro stress.</span>`);
+ if(st.cape)ms.push(`Shiller CAPE at <strong style="color:${st.cape>30?"var(--wn)":st.cape>25?"var(--ca)":"var(--t2)"}">${st.cape.toFixed(1)}x</strong> (median: 16). ${st.cape>30?"Elevated valuations amplify downside risk in a recession.":"Valuations are a factor to monitor."}`);
+ if(both)ms.push(`<span style="color:var(--wn)">Both yield curve and Sahm Rule fired — preceded every major recession since 1970.</span>`);
  return`<div class="ab" style="background:${bgc};border:1px solid ${bdr}">
  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap"><span style="font-size:13px">⚠</span>
  <span class="m" style="font-size:10px;font-weight:700;color:${ic};letter-spacing:.08em">${ttl}</span>
- <span class="m" style="font-size:8px;color:var(--t5);margin-left:auto">LIVE · FROM FRED</span></div>
+ <span class="m" style="font-size:8px;color:var(--t5);margin-left:auto">LIVE</span></div>
  ${ms.map(m=>`<p style="font-size:12px;color:#999;line-height:1.7;margin-bottom:6px">${m}</p>`).join("")}</div>`}
 
 function mktB(){return`<div class="mg">${MK.map(m=>{
- if(m.isGold){const gp=st.goldPrice;
-  return`<div class="mc"><div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.08em">Gold</div>
-  <div class="m" style="font-size:14px;font-weight:700;margin-top:3px">${gp?`$${gp.toFixed(0)}`:"N/A"}</div>
-  <div class="m" style="font-size:8px;color:var(--ca);margin-top:2px">${gp?"Safe haven":"FRED discontinued"}</div></div>`}
  const d=st.mk[m.f],full=st.mkF[m.f];const v=d?.length?parseFloat(d[d.length-1].value):null;
  const p=d?.length>1?parseFloat(d[d.length-2].value):null;
  const ch=v&&p?((v-p)/p*100).toFixed(2):null;const up=ch?parseFloat(ch)>=0:true;
@@ -257,10 +277,10 @@ function mktB(){return`<div class="mg">${MK.map(m=>{
 function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[status]||ST.unknown;
  const show=d.slice(-24);const lat=d.length?d[d.length-1]:null;const val=lat?parseFloat(lat.value):null;const op=st.ex[s.k];
  let disp="—";
- if(s.tr&&d.length>=3){const r=d.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(r.length>=2){const c=((r[r.length-1]-r[0])/1000).toFixed(0);disp=`${c>0?"+":""}${c}K`}}
+ if(s.isCape&&st.cape)disp=st.cape.toFixed(1);
+ else if(s.tr&&d.length>=3){const r=d.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(r.length>=2){const c=((r[r.length-1]-r[0])/1000).toFixed(0);disp=`${c>0?"+":""}${c}K`}}
  else if(s.divK&&val!=null&&!isNaN(val))disp=(val/1000).toFixed(0);
  else if(val!=null&&!isNaN(val))disp=val.toFixed(2);
- // Historical comparison
  let hcomp="";
  if(op&&(s.pre08!=null||s.pre20!=null)){
   hcomp=`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:6px">PRE-RECESSION LEVELS</div><div class="hcomp">
@@ -275,23 +295,21 @@ function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[statu
  <p class="m" style="font-size:10px;color:#666">${s.s}</p></div>
  <div style="text-align:right;flex-shrink:0"><div class="m" style="font-size:26px;font-weight:800;color:${cfg.c};line-height:1.1">${disp}<span style="font-size:11px;opacity:.5">${s.u}</span></div>
  <div class="m" style="font-size:9px;color:var(--t4);margin-top:4px">${lat?.date||""}</div></div></div>
- ${spark(show,cfg.c)}
+ ${s.isCape?"":spark(show,cfg.c)}
  ${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}">
  <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div>
  <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>
  ${hcomp}
- <p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">View on FRED →</a></p></div>`:""}
+ <p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`Source: <a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com/shiller-pe →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">View on FRED →</a>`}</p></div>`:""}
  <div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲ collapse":"▼ details"}</div></div>`}
 
 function leg(){return`<div class="lg"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">STATUS LEGEND</div>
  <div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px">${Object.entries(ST).filter(([k])=>k!=="unknown").map(([k,v])=>`<div style="display:flex;align-items:center;gap:5px">${dot(k,7)}<span class="m" style="font-size:10px;color:${v.c}">${v.l}</span></div>`).join("")}</div>
- <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED. ISM proxied via Mfg Employment. Gold from goldprice.org (FRED discontinued series). DXY = Trade Weighted USD Broad.<br>
+ <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED + multpl.com. ISM proxied via Mfg Employment. DXY = Trade Weighted USD Broad. CAPE = Shiller P/E 10.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Review monthly · Not financial advice.</p></div>`}
 
-/* ── Auto-refresh ── */
 function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}else{st.autoRef=setInterval(()=>loadAll(),4*60*60*1000)}render()}
-function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr6");render()}
-
+function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr7");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
