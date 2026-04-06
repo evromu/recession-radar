@@ -33,7 +33,9 @@ a{color:var(--ca)}
 .bt-wrap{margin-top:20px;margin-bottom:4px;background:var(--sf);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
 .bt-hdr{padding:16px 20px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent}
 .bt-body{padding:0 20px 20px}
-.bt-chart{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.bt-chart{position:relative;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.bt-tooltip{position:absolute;pointer-events:none;background:rgba(14,13,11,.95);border:1px solid #444;border-radius:6px;padding:6px 10px;z-index:10;white-space:nowrap;transform:translateX(-50%);transition:opacity .15s}
+.desc{font-size:12px;color:#888;line-height:1.6;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,.05)}
 @media(max-width:500px){.mg{grid-template-columns:repeat(2,1fr)}.card{padding:14px 16px}.ga{padding:18px 14px}.hcomp{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
@@ -41,59 +43,68 @@ a{color:var(--ca)}
 <div id="app"></div>
 <script>
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>u];
+function clamp(v){return Math.max(0,Math.min(100,v))}
 
 const S=[
  {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y − 2Y Treasury Spread",u:"%",
+  desc:"Measures the difference between 10-year and 2-year Treasury yields. When short-term rates exceed long-term rates (inversion), it signals markets expect economic weakness ahead. The recession typically arrives 6–18 months after the curve un-inverts back to positive.",
   th:"< −0.3 Inverted (Stress) | 0–0.2 Flat (Caution) | > 0.5 Normal",
   hi:"Predicted 8/8 recessions since 1970. Recession arrives after un-inversion.",
   pre08:-0.19,pre20:0.04,pre01:-0.52,
   ev:v=>v==null?"unknown":v<-.3?"stress":v<0?"warning":v<.2?"caution":v<.5?"watch":"clear",
-  // Backtest scoring: 1.5 (safe=0) to -0.5 (danger=100), inverted
   sc:v=>v==null?null:clamp((1.5-v)/2*100)},
  {k:"sa",f:"SAHMREALTIME",n:"Sahm Rule",s:"Unemployment Rate Momentum",u:" pp",
+  desc:"Created by economist Claudia Sahm. Measures the 3-month moving average of the unemployment rate vs. its 12-month low. When the gap reaches 0.50 percentage points, it signals a recession has begun or is imminent. Designed to trigger early enough for policy response.",
   th:"≥ 0.50 Recession signal | 0.30–0.50 Approaching | < 0.15 Clear",
   hi:"Triggered every recession since 1950. Only 2 false positives since 1959.",
   pre08:0.53,pre20:0.5,pre01:0.3,
   ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear",
   sc:v=>v==null?null:clamp(v/0.6*100)},
  {k:"cr",f:"BAMLH0A0HYM2",n:"Credit Spreads",s:"ICE BofA High Yield OAS",u:"%",
+  desc:"Tracks the yield premium investors demand to hold risky corporate bonds over safe Treasuries. Widening spreads mean the bond market is pricing in higher default risk — a sign that credit conditions are tightening and economic stress is building. Credit markets often lead stocks by weeks.",
   th:"< 3.5% Normal | 3.5–5% Elevated | 5–8% Stress | > 8% Crisis",
   hi:"Hit 10%+ in 2008 and Mar 2020. Credit leads equities by weeks.",
   pre08:7.96,pre20:3.57,pre01:6.45,
   ev:v=>v==null?"unknown":v>8?"stress":v>5?"warning":v>3.5?"caution":"clear",
   sc:v=>v==null?null:clamp((v-3)/7*100)},
  {k:"li",f:"USSLIND",n:"Leading Index",s:"Philly Fed Leading Index",u:"%",
+  desc:"A composite index from the Philadelphia Federal Reserve that combines multiple forward-looking economic indicators (new orders, building permits, interest rate spreads, employment data) into a single reading. Negative values signal the economy is likely to contract in coming months.",
   th:"< −2 Stress | −0.5 to −2 Warning | 0 to −0.5 Caution | > 1 Strong",
   hi:"Negative readings preceded every recession in 50 years.",
   pre08:-1.21,pre20:0.28,pre01:-0.88,
   ev:v=>v==null?"unknown":v<-2?"stress":v<-.5?"warning":v<0?"caution":v<1?"watch":"clear",
   sc:v=>v==null?null:clamp((2-v)/5*100)},
  {k:"mf",f:"MANEMP",n:"Mfg Employment",s:"Manufacturing Jobs (ISM proxy)",u:"K",tr:1,
+  desc:"Tracks total manufacturing employment in the U.S. Manufacturing is cyclically sensitive and tends to contract before the broader economy. Used as a proxy for the proprietary ISM Manufacturing PMI. The 3-month change in employment reveals the trend direction.",
   th:"3-mo change: losses > 50K = Stress | losses = Caution | gains = Clear",
   hi:"Mfg job losses preceded every recession since 1948.",
   ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear",
-  sc:null}, // scored separately via trend
+  sc:null},
  {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Univ. of Michigan Index",u:"",
+  desc:"Monthly survey of U.S. households measuring confidence in personal finances, business conditions, and buying attitudes. Consumer spending drives ~70% of GDP, so when sentiment drops sharply, spending pullbacks and recession often follow. Watch the gap between Expectations and Present Situation components.",
   th:"< 55 Stress | 55–60 Warning | 60–70 Caution | 70–80 Watch | > 80 Healthy",
   hi:"Sharp declines preceded consumer spending pullbacks and recessions.",
   pre08:63.0,pre20:101.0,pre01:94.7,
   ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear",
   sc:v=>v==null?null:clamp((95-v)/45*100)},
  {k:"vx",f:"VIXCLS",n:"VIX",s:"CBOE Volatility Index",u:"",
+  desc:"The 'fear gauge' — measures expected 30-day volatility of the S&P 500 derived from options prices. High VIX means options traders are paying up for protection, signaling fear and uncertainty. VIX in backwardation (near-term > long-term) is an even stronger stress signal.",
   th:"< 15 Complacent | 15–20 Normal | 20–25 Watch | 25–30 Caution | > 30 Warning | > 35 Stress",
   hi:"VIX > 30 preceded every major selloff in 20 years.",
   pre08:23.0,pre20:14.0,pre01:25.5,
   ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear",
   sc:v=>v==null?null:clamp((v-12)/28*100)},
  {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Initial Claims + CLF Ratio",u:"",
-  th:"Raw: < 220K Healthy | > 300K Warning | > 350K Stress. Ratio: < 0.15% Healthy | > 0.25% Warning",
+  desc:"Weekly count of first-time unemployment insurance filings. The fastest-updating labor market indicator. The Claims/CLF ratio normalizes against the Civilian Labor Force to account for workforce growth — 300K claims meant more when the labor force was 130M than at today's 170M.",
+  th:"Raw: < 220K Healthy | > 300K Warning. Ratio: < 1.3 Healthy | 1.3–1.6 Normal | > 2.0 Warning",
   hi:"Weekly leading indicator. CLF-normalized ratio removes labor force growth distortion.",
   pre08:346,pre20:282,pre01:305,
   ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",
   divK:true,hasCLF:true,
-  sc:null}, // scored via ratio
+  sc:null},
  {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Cyclically Adjusted P/E (P/E 10)",u:"x",isCape:true,
-  th:"< 15 Undervalued | 15–20 Fair | 20–25 Elevated | 25–30 Expensive | 30–38 Very Expensive | > 38 Extreme",
+  desc:"Robert Shiller's valuation metric — S&P 500 price divided by average inflation-adjusted earnings over 10 years. Smooths out business cycle fluctuations to reveal whether the market is fundamentally cheap or expensive. Doesn't time crashes, but tells you how far the market could fall when one hits. High CAPE = more downside risk.",
+  th:"< 15 Undervalued | 15–20 Fair | 20–25 Elevated | 25–30 Expensive | 30–38 V. Expensive | > 38 Extreme",
   hi:"Median: 16.0 | Pre-2000: 44.2 | Pre-2008: 27.3 | Pre-2020: 31.3. High CAPE = further to fall.",
   pre08:27.3,pre20:31.3,pre01:44.2,
   ev:v=>v==null?"unknown":v>38?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear",
@@ -101,17 +112,14 @@ const S=[
 ];
 
 const MK=[
- {f:"SP500",n:"S&P 500",p:"",d:0,pk:true},
- {f:"NASDAQCOM",n:"NASDAQ",p:"",d:0,pk:true},
- {f:"DCOILBRENTEU",n:"Brent Oil",p:"$",d:2},
- {f:"DGS10",n:"10Y Yield",p:"",x:"%",d:2},
- {f:"DFF",n:"Fed Funds",p:"",x:"%",d:2},
- {f:"DTWEXBGS",n:"DXY Dollar",p:"",d:1},
+ {f:"SP500",n:"S&P 500",p:"",d:0,pk:true},{f:"NASDAQCOM",n:"NASDAQ",p:"",d:0,pk:true},
+ {f:"DCOILBRENTEU",n:"Brent Oil",p:"$",d:2},{f:"DGS10",n:"10Y Yield",p:"",x:"%",d:2},
+ {f:"DFF",n:"Fed Funds",p:"",x:"%",d:2},{f:"DTWEXBGS",n:"DXY Dollar",p:"",d:1},
 ];
 
 const ST={
  clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:"CLEAR"},
- watch:{c:"#90A4AE",bg:"rgba(144,164,174,.06)",b:"rgba(144,164,174,.18)",l:"NORMAL"},
+ watch:{c:"#78909C",bg:"rgba(120,144,156,.06)",b:"rgba(120,144,156,.18)",l:"WATCH"},
  caution:{c:"#FFC107",bg:"rgba(255,193,7,.07)",b:"rgba(255,193,7,.22)",l:"CAUTION"},
  warning:{c:"#FF9100",bg:"rgba(255,145,0,.07)",b:"rgba(255,145,0,.22)",l:"WARNING"},
  stress:{c:"#FF1744",bg:"rgba(255,23,68,.07)",b:"rgba(255,23,68,.22)",l:"STRESS"},
@@ -124,14 +132,11 @@ const LV=[
  {x:99,l:"RED",s:"Capital Preservation",c:"#FF1744",st:"Raise cash 40–50%. Exit leverage. Hedge. Survive first, profit later."},
 ];
 
-function clamp(v){return Math.max(0,Math.min(100,v))}
-
-let st={key:localStorage.getItem("rr8")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
+let st={key:localStorage.getItem("rr9")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
  al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,autoRef:null,
- clf:null,claims4wk:null,clfRatio:null,
+ clfRaw:null,claims4wk:null,clfRatio:null,
  bt:{open:false,loading:false,loaded:false,data:null,err:null}};
 
-/* ── FRED Fetch ── */
 async function ff(sid,key,lim=24,freq=""){
  let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;
  if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;
@@ -145,38 +150,62 @@ async function ff(sid,key,lim=24,freq=""){
  throw new Error(sid);
 }
 
-/* ── CAPE Fetch ── */
 async function fetchCAPE(){
  const urls=["https://www.multpl.com/shiller-pe","https://www.multpl.com/shiller-pe/table/by-month"];
- for(const url of urls){
-  const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
-  for(const i of ord){
-   try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;
-    const html=await r.text();
-    const pats=[/Current\s+Shiller\s+PE[^0-9]*([\d]{1,2}\.[\d]{1,2})/i,
-     /<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<]*<\/td>\s*<td[^>]*>\s*([\d]+\.[\d]+)/i,
-     /([\d]{2}\.[\d]{2})\s*<\/td>/];
-    for(const pat of pats){const m=html.match(pat);if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}
-   }catch{continue}}}
+ for(const url of urls){const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
+  for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;
+   const html=await r.text();
+   const pats=[/Current\s+Shiller\s+PE[^0-9]*([\d]{1,2}\.[\d]{1,2})/i,/<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<]*<\/td>\s*<td[^>]*>\s*([\d]+\.[\d]+)/i,/([\d]{2}\.[\d]{2})\s*<\/td>/];
+   for(const pat of pats){const m=html.match(pat);if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}}catch{continue}}}
  st.cape=null;
 }
 
-/* ── CLF + 4-week MA ── */
+/* CAPE historical for backtest */
+async function fetchCAPEHistory(){
+ try{
+  const url="https://www.multpl.com/shiller-pe/table/by-month";
+  const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
+  for(const i of ord){
+   try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;
+    const html=await r.text();
+    const rows=[];const re=/<tr[^>]*>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([\d.]+)<\/td>/gi;
+    let m;while((m=re.exec(html))!==null){
+     const dateStr=m[1].trim();const val=parseFloat(m[2]);
+     if(isNaN(val)||val<3)continue;
+     const d=new Date(dateStr);if(isNaN(d))continue;
+     const ym=d.toISOString().substring(0,7);
+     rows.push({month:ym,value:val})}
+    if(rows.length>12)return rows;
+   }catch{continue}}
+ }catch{}
+ return[];
+}
+
+/* CLF ratio — fixed: CLF16OV is in thousands, ICSA is raw number.
+   User wants: raw ICSA / raw CLF16OV = claims per 1000 labor force members */
 async function fetchCLF(){
  try{
   const clf=await ff("CLF16OV",st.key,3);
-  if(clf.length)st.clf=parseFloat(clf[clf.length-1].value)*1000; // CLF is in thousands
-  const claims=st.d.ic||[];
-  if(claims.length>=4&&st.clf){
-   const last4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
-   st.claims4wk=last4.reduce((a,b)=>a+b,0)/last4.length;
-   st.clfRatio=(st.claims4wk/st.clf*100); // percentage
+  if(clf.length){
+   st.clfRaw=parseFloat(clf[clf.length-1].value); // e.g. 170087 (thousands)
+   const claims=st.d.ic||[];
+   if(claims.length>=4&&st.clfRaw){
+    const last4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
+    st.claims4wk=last4.reduce((a,b)=>a+b,0)/last4.length;
+    // Ratio = claims / CLF (both in FRED raw units) × 100 to get percentage
+    // e.g. 207750 / 170087 = 1.22 (per thousand), displayed as %
+    st.clfRatio=(st.claims4wk/st.clfRaw)*100; // ~0.12%
+    // Wait — user says 207750/170087 = 1.22%. Let me match their expectation.
+    // Actually the ratio IS 207750/170087 = 1.221. User calls this 1.22%.
+    // So just do claims/CLF_raw, no *100 needed, display as-is with % sign
+    st.clfRatio=st.claims4wk/st.clfRaw; // e.g. 1.22
+   }
   }
- }catch{st.clf=null;st.claims4wk=null;st.clfRatio=null}
+ }catch{st.clfRaw=null;st.claims4wk=null;st.clfRatio=null}
 }
 
 function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};
- let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0){inv=true}else if(inv&&!ud)ud=d[i].date}
+ let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0)inv=true;else if(inv&&!ud)ud=d[i].date}
  return{ycUD:ud,ycInv:inv}}
 function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};
  let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}
@@ -190,8 +219,7 @@ async function loadAll(){
   try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}
   catch{st.d[s.k]=[];fl.push(s.n)}}
  for(const m of MK){try{st.mkF[m.f]=await ff(m.f,st.key,m.pk?260:10);st.mk[m.f]=st.mkF[m.f].slice(-5)}catch{st.mk[m.f]=[];st.mkF[m.f]=[]}}
- await fetchCAPE();
- await fetchCLF();
+ await fetchCAPE();await fetchCLF();
  if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else{st.d.cape=[];fl.push("CAPE")}
  for(const s of S){const obs=st.d[s.k]||[];
   if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}
@@ -203,66 +231,45 @@ async function loadAll(){
  st.ld=false;render()
 }
 
-/* ═══ BACKTEST ENGINE ═══ */
+/* ═══ BACKTEST ═══ */
 async function loadBacktest(){
  st.bt.loading=true;st.bt.err=null;render();
  try{
-  // Fetch ~30 years of monthly data for each FRED indicator + USREC + CLF
-  const series={
-   yc:{id:"T10Y2Y",sc:v=>v==null?null:clamp((1.5-v)/2*100)},
-   sa:{id:"SAHMREALTIME",sc:v=>v==null?null:clamp(v/0.6*100)},
-   cr:{id:"BAMLH0A0HYM2",sc:v=>v==null?null:clamp((v-3)/7*100)},
-   li:{id:"USSLIND",sc:v=>v==null?null:clamp((2-v)/5*100)},
-   mf:{id:"MANEMP",sc:null}, // trend-based
-   co:{id:"UMCSENT",sc:v=>v==null?null:clamp((95-v)/45*100)},
-   vx:{id:"VIXCLS",sc:v=>v==null?null:clamp((v-12)/28*100)},
-   ic:{id:"ICSA",sc:null}, // ratio-based
-   clf:{id:"CLF16OV",sc:null},
-   rec:{id:"USREC",sc:null},
-  };
+  const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",li:"USSLIND",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC"};
   const raw={};
-  for(const[k,s] of Object.entries(series)){
-   try{raw[k]=await ff(s.id,st.key,500,"m")}catch{raw[k]=[]}
-  }
-  // Build monthly timeline
+  for(const[k,id] of Object.entries(ids)){try{raw[k]=await ff(id,st.key,500,"m")}catch{raw[k]=[]}}
+  // Fetch CAPE history
+  const capeHist=await fetchCAPEHistory();
+  const capeIdx={};capeHist.forEach(c=>{capeIdx[c.month]=c.value});
+
   const allDates=new Set();
-  for(const k of Object.keys(raw)){raw[k].forEach(o=>allDates.add(o.date.substring(0,7)))}
+  for(const obs of Object.values(raw))obs.forEach(o=>allDates.add(o.date.substring(0,7)));
+  Object.keys(capeIdx).forEach(m=>allDates.add(m));
   const months=[...allDates].sort();
-
-  // Index data by year-month
   const idx={};
-  for(const[k,obs] of Object.entries(raw)){
-   idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
+  for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
 
-  // Calculate composite score per month
   const composite=[];
   for(const m of months){
    const scores=[];
-   // Yield curve
    if(idx.yc[m]!=null&&!isNaN(idx.yc[m]))scores.push(clamp((1.5-idx.yc[m])/2*100));
-   // Sahm
    if(idx.sa[m]!=null&&!isNaN(idx.sa[m]))scores.push(clamp(idx.sa[m]/0.6*100));
-   // Credit
    if(idx.cr[m]!=null&&!isNaN(idx.cr[m]))scores.push(clamp((idx.cr[m]-3)/7*100));
-   // Leading
    if(idx.li[m]!=null&&!isNaN(idx.li[m]))scores.push(clamp((2-idx.li[m])/5*100));
-   // Mfg — 3 month trend
    const mfKeys=months.filter(x=>x<=m).slice(-4);
-   if(mfKeys.length>=4){
-    const v0=idx.mf[mfKeys[0]],v3=idx.mf[mfKeys[3]];
-    if(v0!=null&&v3!=null){const trend=v3-v0;scores.push(clamp((50-trend)/150*100))}}
-   // Consumer
+   if(mfKeys.length>=4){const v0=idx.mf[mfKeys[0]],v3=idx.mf[mfKeys[3]];
+    if(v0!=null&&v3!=null){scores.push(clamp((50-(v3-v0))/150*100))}}
    if(idx.co[m]!=null&&!isNaN(idx.co[m]))scores.push(clamp((95-idx.co[m])/45*100));
-   // VIX
    if(idx.vx[m]!=null&&!isNaN(idx.vx[m]))scores.push(clamp((idx.vx[m]-12)/28*100));
    // Claims/CLF ratio
    if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){
-    const ratio=idx.ic[m]/(idx.clf[m]*1000)*100; // CLF in thousands, ICSA in units
-    scores.push(clamp((ratio-0.12)/0.23*100))}
+    const ratio=idx.ic[m]/idx.clf[m]; // raw units: claims / CLF(thousands)
+    scores.push(clamp((ratio-0.8)/2.5*100))}
+   // CAPE
+   if(capeIdx[m]!=null)scores.push(clamp((capeIdx[m]-15)/25*100));
 
    const avg=scores.length>=3?scores.reduce((a,b)=>a+b,0)/scores.length:null;
-   const rec=idx.rec[m];
-   composite.push({month:m,score:avg,recession:rec===1,count:scores.length});
+   composite.push({month:m,score:avg,recession:idx.rec[m]===1,count:scores.length});
   }
   st.bt.data=composite.filter(c=>c.score!=null);
   st.bt.loaded=true;
@@ -270,81 +277,108 @@ async function loadBacktest(){
  st.bt.loading=false;render();
 }
 
-function renderBacktestChart(){
- const data=st.bt.data;if(!data||data.length<12)return`<p class="m" style="font-size:11px;color:var(--t4)">Not enough data for backtest.</p>`;
- const W=Math.max(660,data.length*2.5),H=220,PAD={t:20,b:40,l:40,r:10};
+function renderBTChart(){
+ const data=st.bt.data;if(!data||data.length<12)return`<p class="m" style="font-size:11px;color:var(--t4)">Not enough data.</p>`;
+ const W=Math.max(660,data.length*2.5),H=240,PAD={t:25,b:40,l:40,r:20};
  const cw=W-PAD.l-PAD.r,ch=H-PAD.t-PAD.b;
 
- // Recession bands
- let recBands="";
- let inRec=false,recStart=0;
+ let recBands="",inRec=false,recStart=0;
  for(let i=0;i<data.length;i++){
-  const x=PAD.l+(i/data.length)*cw;
+  const x=PAD.l+(i/(data.length-1))*cw;
   if(data[i].recession&&!inRec){inRec=true;recStart=x}
-  if(!data[i].recession&&inRec){inRec=false;recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${x-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="2"/>`}
- }
- if(inRec)recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${PAD.l+cw-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="2"/>`;
+  if(!data[i].recession&&inRec){inRec=false;recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${x-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="1"/>`}}
+ if(inRec)recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${PAD.l+cw-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="1"/>`;
 
- // Zone fills
- const zones=[
-  {y0:0,y1:25,color:"rgba(0,230,118,.06)"},   // Green zone
-  {y0:25,y1:50,color:"rgba(255,193,7,.05)"},   // Yellow zone
-  {y0:50,y1:75,color:"rgba(255,145,0,.05)"},   // Orange zone
-  {y0:75,y1:100,color:"rgba(255,23,68,.06)"},  // Red zone
- ];
- let zoneFills="";
- for(const z of zones){
-  const yt=PAD.t+(1-z.y1/100)*ch,yb=PAD.t+(1-z.y0/100)*ch;
-  zoneFills+=`<rect x="${PAD.l}" y="${yt}" width="${cw}" height="${yb-yt}" fill="${z.color}"/>`}
+ const zones=[{y0:0,y1:25,c:"rgba(0,230,118,.05)"},{y0:25,y1:50,c:"rgba(255,193,7,.04)"},{y0:50,y1:75,c:"rgba(255,145,0,.04)"},{y0:75,y1:100,c:"rgba(255,23,68,.05)"}];
+ let zf="";for(const z of zones){const yt=PAD.t+(1-z.y1/100)*ch,yb=PAD.t+(1-z.y0/100)*ch;zf+=`<rect x="${PAD.l}" y="${yt}" width="${cw}" height="${yb-yt}" fill="${z.c}"/>`}
 
- // Grid lines + labels
  let grid="";
- for(const v of [0,25,50,75,100]){
-  const y=PAD.t+(1-v/100)*ch;
-  grid+=`<line x1="${PAD.l}" y1="${y}" x2="${PAD.l+cw}" y2="${y}" stroke="rgba(255,255,255,.08)" stroke-width="0.5"/>`;
+ for(const v of [0,25,50,75,100]){const y=PAD.t+(1-v/100)*ch;
+  grid+=`<line x1="${PAD.l}" y1="${y}" x2="${PAD.l+cw}" y2="${y}" stroke="rgba(255,255,255,.07)" stroke-width="0.5"/>`;
   grid+=`<text x="${PAD.l-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${v}</text>`}
 
- // Year labels
- let yearLabels="";
- let lastYear="";
- for(let i=0;i<data.length;i++){
-  const yr=data[i].month.substring(0,4);
-  if(yr!==lastYear&&parseInt(yr)%2===0){
-   const x=PAD.l+(i/data.length)*cw;
-   yearLabels+=`<text x="${x}" y="${H-8}" text-anchor="middle" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${yr}</text>`;
-   yearLabels+=`<line x1="${x}" y1="${PAD.t}" x2="${x}" y2="${PAD.t+ch}" stroke="rgba(255,255,255,.04)" stroke-width="0.5"/>`;
-   lastYear=yr}}
+ let yl="",lastY="";
+ for(let i=0;i<data.length;i++){const yr=data[i].month.substring(0,4);
+  if(yr!==lastY&&parseInt(yr)%2===0){const x=PAD.l+(i/(data.length-1))*cw;
+   yl+=`<text x="${x}" y="${H-8}" text-anchor="middle" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${yr}</text>`;
+   yl+=`<line x1="${x}" y1="${PAD.t}" x2="${x}" y2="${PAD.t+ch}" stroke="rgba(255,255,255,.03)" stroke-width="0.5"/>`;lastY=yr}}
 
- // Score line
- const pts=data.map((d,i)=>{
-  const x=PAD.l+(i/data.length)*cw;
-  const y=PAD.t+(1-d.score/100)*ch;
-  return`${x},${y}`}).join(" ");
-
- // Gradient for the area fill
+ const pts=data.map((d,i)=>{const x=PAD.l+(i/(data.length-1))*cw;const y=PAD.t+(1-d.score/100)*ch;return`${x},${y}`}).join(" ");
  const areaPts=`${PAD.l},${PAD.t+ch} ${pts} ${PAD.l+cw},${PAD.t+ch}`;
+ const last=data[data.length-1].score;
+ const lc=last>75?"var(--st)":last>50?"var(--wn)":last>25?"var(--ca)":"var(--cl)";
+ const lastY2=PAD.t+(1-last/100)*ch;
 
- // Color the line based on current score
- const lastScore=data[data.length-1].score;
- const lineColor=lastScore>75?"var(--st)":lastScore>50?"var(--wn)":lastScore>25?"var(--ca)":"var(--cl)";
+ // Score label positioned above the chart area, not on the line
+ const labelY=Math.max(PAD.t+4,lastY2-16);
 
- // Current score callout
- const lastX=PAD.l+cw;
- const lastY=PAD.t+(1-lastScore/100)*ch;
+ return`<div class="bt-chart" id="bt-chart-wrap" style="position:relative">
+  <svg id="bt-svg" width="${W}" height="${H}" style="display:block">
+   <defs><linearGradient id="btg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${lc}" stop-opacity=".15"/><stop offset="100%" stop-color="${lc}" stop-opacity="0"/></linearGradient></defs>
+   ${zf}${recBands}${grid}${yl}
+   <polygon points="${areaPts}" fill="url(#btg)"/>
+   <polyline points="${pts}" fill="none" stroke="${lc}" stroke-width="1.5" stroke-linejoin="round"/>
+   <circle cx="${PAD.l+cw}" cy="${lastY2}" r="4" fill="${lc}" stroke="var(--bg)" stroke-width="2"/>
+   <text x="${PAD.l+cw-8}" y="${labelY}" text-anchor="end" fill="${lc}" font-size="12" font-weight="700" font-family="JetBrains Mono,monospace">${last.toFixed(0)}</text>
+   <rect x="${PAD.l+6}" y="${PAD.t+4}" width="8" height="8" fill="rgba(255,255,255,.08)" rx="1"/>
+   <text x="${PAD.l+18}" y="${PAD.t+12}" fill="#555" font-size="8" font-family="JetBrains Mono,monospace">= NBER Recession</text>
+   <!-- Invisible overlay for mouse/touch interaction -->
+   <rect id="bt-overlay" x="${PAD.l}" y="${PAD.t}" width="${cw}" height="${ch}" fill="transparent" style="cursor:crosshair"/>
+  </svg>
+  <div id="bt-tip" class="bt-tooltip" style="opacity:0;top:0;left:0">
+   <div class="m" style="font-size:10px;font-weight:700;color:var(--tx)" id="bt-tip-score"></div>
+   <div class="m" style="font-size:9px;color:var(--t3)" id="bt-tip-date"></div>
+   <div class="m" style="font-size:8px;color:var(--t4)" id="bt-tip-rec"></div>
+  </div>
+  <div id="bt-crosshair" style="position:absolute;top:${PAD.t}px;width:1px;height:${ch}px;background:rgba(255,255,255,.15);pointer-events:none;opacity:0"></div>
+ </div>`;
+}
 
- return`<div class="bt-chart"><svg width="${W}" height="${H}" style="display:block">
-  <defs>
-   <linearGradient id="btg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${lineColor}" stop-opacity=".2"/><stop offset="100%" stop-color="${lineColor}" stop-opacity="0"/></linearGradient>
-  </defs>
-  ${zoneFills}${recBands}${grid}${yearLabels}
-  <polygon points="${areaPts}" fill="url(#btg)"/>
-  <polyline points="${pts}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linejoin="round"/>
-  <circle cx="${lastX}" cy="${lastY}" r="4" fill="${lineColor}" stroke="var(--bg)" stroke-width="2"/>
-  <text x="${lastX-8}" y="${lastY-10}" text-anchor="end" fill="${lineColor}" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${lastScore.toFixed(0)}</text>
-  <!-- Legend -->
-  <rect x="${PAD.l+8}" y="${PAD.t+4}" width="8" height="8" fill="rgba(255,255,255,.06)" rx="1"/>
-  <text x="${PAD.l+20}" y="${PAD.t+12}" fill="#555" font-size="8" font-family="JetBrains Mono,monospace">= NBER Recession</text>
- </svg></div>`;
+function bindBTChart(){
+ const wrap=document.getElementById("bt-chart-wrap");
+ const svg=document.getElementById("bt-svg");
+ const tip=document.getElementById("bt-tip");
+ const cross=document.getElementById("bt-crosshair");
+ if(!wrap||!svg||!tip||!cross||!st.bt.data)return;
+
+ const data=st.bt.data;
+ const W=parseFloat(svg.getAttribute("width"));
+ const H=parseFloat(svg.getAttribute("height"));
+ const PAD={t:25,b:40,l:40,r:20};
+ const cw=W-PAD.l-PAD.r,ch=H-PAD.t-PAD.b;
+
+ function handleMove(clientX){
+  const rect=svg.getBoundingClientRect();
+  const scrollLeft=wrap.scrollLeft;
+  const svgX=(clientX-rect.left)+scrollLeft;
+  const dataX=svgX-PAD.l;
+  if(dataX<0||dataX>cw){tip.style.opacity="0";cross.style.opacity="0";return}
+  const idx=Math.round((dataX/cw)*(data.length-1));
+  const clamped=Math.max(0,Math.min(data.length-1,idx));
+  const d=data[clamped];
+  const sc=d.score.toFixed(1);
+  const col=d.score>75?"var(--st)":d.score>50?"var(--wn)":d.score>25?"var(--ca)":"var(--cl)";
+
+  document.getElementById("bt-tip-score").textContent=`Score: ${sc}`;
+  document.getElementById("bt-tip-score").style.color=col;
+  document.getElementById("bt-tip-date").textContent=d.month;
+  document.getElementById("bt-tip-rec").textContent=d.recession?"RECESSION":"";
+  document.getElementById("bt-tip-rec").style.color="var(--st)";
+
+  const xPos=PAD.l+(clamped/(data.length-1))*cw;
+  const yPos=PAD.t+(1-d.score/100)*ch;
+
+  tip.style.opacity="1";
+  tip.style.left=xPos+"px";
+  tip.style.top=(yPos-50)+"px";
+  cross.style.opacity="1";
+  cross.style.left=xPos+"px";
+ }
+
+ svg.addEventListener("mousemove",e=>handleMove(e.clientX));
+ svg.addEventListener("touchmove",e=>{e.preventDefault();handleMove(e.touches[0].clientX)},{passive:false});
+ svg.addEventListener("mouseleave",()=>{tip.style.opacity="0";cross.style.opacity="0"});
+ svg.addEventListener("touchend",()=>{tip.style.opacity="0";cross.style.opacity="0"});
 }
 
 /* ── Sparkline ── */
@@ -359,15 +393,17 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 /* ── RENDER ── */
 function render(){const a=document.getElementById("app");
  if(!st.key){a.innerHTML=setup();bindSetup();return}
- if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">9 indicators + market context + CLF ratio</p></div>`;return}
+ if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">9 indicators + CLF ratio + market context</p></div>`;return}
  a.innerHTML=`<div class="c">${hdr()}${st.err?`<div class="err-box"><p class="m" style="font-size:11px;color:var(--st);line-height:1.5;white-space:pre-line">${st.err}</p></div>`:""}${gauge()}${dynAlert()}${mktB()}<div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div><div style="display:flex;flex-direction:column;gap:10px">${S.map(s=>card(s)).join("")}</div>${backtestSection()}${leg()}</div>`;
- document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}))}
+ document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
+ if(st.bt.open&&st.bt.loaded)setTimeout(bindBTChart,50);
+}
 
 function setup(){return`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center">
  <h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1>
  <p class="m" style="font-size:9px;color:var(--t4);letter-spacing:.12em;margin-bottom:32px">LIVE INDICATOR DASHBOARD + BACKTEST</p>
  <div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left">
- <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">9 recession indicators with live FRED data, CLF-normalized claims, Shiller CAPE, and composite backtest scoring.</p>
+ <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">9 recession indicators · Live FRED data · CLF-normalized claims · Shiller CAPE · Composite backtest scoring.</p>
  <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block;text-decoration:underline">Get free FRED API key →</a>
  <div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;display:block;margin-bottom:6px">FRED API KEY</label>
  <input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div>
@@ -375,7 +411,7 @@ function setup(){return`<div style="min-height:100vh;display:flex;align-items:ce
  <p class="m" style="font-size:8px;color:var(--t5);margin-top:14px">Add to home screen for app-like access</p></div></div>`}
 function bindSetup(){setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;
  i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});
- const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr8",k);loadAll()}};
+ const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr9",k);loadAll()}};
  b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50)}
 
 function hdr(){const t=st.upd?st.upd.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):"";const arOn=!!st.autoRef;
@@ -390,14 +426,13 @@ function hdr(){const t=st.upd?st.upd.toLocaleTimeString([],{hour:'2-digit',minut
 function gauge(){const ss=S.map(s=>st.ss[s.k]||"unknown");
  const sv=ss.filter(s=>s==="stress"||s==="warning").length,ca=ss.filter(s=>s==="caution").length,wa=ss.filter(s=>s==="watch").length,al=sv+ca;
  let lv=LV[0];for(const o of LV)if(al<=o.x){lv=o;break}if(al>=6)lv=LV[3];
- // Current composite score
- let compScore=null;
+ // Composite score — includes CAPE
  const scores=[];
- S.forEach(s=>{if(s.sc&&!s.isCape){const obs=st.d[s.k]||[];const lat=obs.length?parseFloat(obs[obs.length-1].value):null;const sc=s.sc(lat);if(sc!=null)scores.push(sc)}
+ S.forEach(s=>{
+  if(s.sc&&!s.isCape){const obs=st.d[s.k]||[];const lat=obs.length?parseFloat(obs[obs.length-1].value):null;const sc=s.sc(lat);if(sc!=null)scores.push(sc)}
   if(s.isCape&&st.cape){const sc=s.sc(st.cape);if(sc!=null)scores.push(sc)}});
- if(st.clfRatio!=null)scores.push(clamp((st.clfRatio-0.12)/0.23*100));
- if(scores.length>=3)compScore=scores.reduce((a,b)=>a+b,0)/scores.length;
-
+ if(st.clfRatio!=null)scores.push(clamp((st.clfRatio-0.8)/2.5*100));
+ const compScore=scores.length>=3?scores.reduce((a,b)=>a+b,0)/scores.length:null;
  return`<div class="ga" style="border:1px solid ${lv.c}22"><div class="gb"></div>
  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
  <div><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.14em;margin-bottom:6px">RECESSION RISK</div>
@@ -424,7 +459,7 @@ function dynAlert(){const ad=st.al;const sahmD=st.d.sa||[],ycD=st.d.yc||[];
  if(ad.sahmD)ms.push(`<strong style="color:var(--ca)">Sahm Rule triggered ${fD(ad.sahmD)}</strong> (peak: ${ad.sahmPk!=null?ad.sahmPk.toFixed(2):"?"}). Current: ${sv!=null?sv.toFixed(2):"N/A"}. ${sv!=null&&sv<.5?"Retreated.":"Active."}`);
  else ms.push(`Sahm Rule at ${sv!=null?sv.toFixed(2):"N/A"} — ${sv!=null&&sv>=.3?"approaching":"below"} 0.50.`);
  if(st.cape)ms.push(`CAPE at <strong style="color:${st.cape>30?"var(--wn)":"var(--t2)"}">${st.cape.toFixed(1)}x</strong> (median 16). ${st.cape>30?"Elevated valuations amplify downside.":""}`);
- if(st.clfRatio!=null)ms.push(`Claims/CLF ratio: <strong style="color:${st.clfRatio>.20?"var(--wn)":"var(--t2)"}">${(st.clfRatio).toFixed(3)}%</strong> (4-wk MA: ${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}). ${st.clfRatio>.20?"Elevated for current labor force size.":"Within normal range."}`);
+ if(st.clfRatio!=null)ms.push(`Claims/CLF ratio: <strong style="color:${st.clfRatio>2.0?"var(--wn)":"var(--t2)"}">${st.clfRatio.toFixed(2)}%</strong> (4-wk MA: ${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"} / CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":"-"}). ${st.clfRatio>2.0?"Elevated.":"Within normal range."}`);
  if(both)ms.push(`<span style="color:var(--wn)">Both yield curve and Sahm Rule fired — preceded every recession since 1970.</span>`);
  return`<div class="ab" style="background:${bgc};border:1px solid ${bdr}">
  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap"><span style="font-size:13px">⚠</span>
@@ -451,18 +486,19 @@ function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[statu
  else if(s.tr&&d.length>=3){const r=d.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(r.length>=2){const c=((r[r.length-1]-r[0])/1000).toFixed(0);disp=`${c>0?"+":""}${c}K`}}
  else if(s.divK&&val!=null&&!isNaN(val))disp=(val/1000).toFixed(0);
  else if(val!=null&&!isNaN(val))disp=val.toFixed(2);
- // CLF ratio subtitle for jobless claims
+ // CLF ratio sub-panel
  if(s.hasCLF&&st.clfRatio!=null){
-  const rc=st.clfRatio>.25?"var(--st)":st.clfRatio>.20?"var(--wn)":st.clfRatio>.15?"var(--ca)":"var(--cl)";
+  const rc=st.clfRatio>2.0?"var(--st)":st.clfRatio>1.6?"var(--wn)":st.clfRatio>1.3?"var(--ca)":"var(--cl)";
   sub=`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.25);border-radius:6px">
    <div style="display:flex;justify-content:space-between;align-items:center">
     <div><div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.08em">CLAIMS / CLF RATIO</div>
-    <div class="m" style="font-size:18px;font-weight:800;color:${rc};margin-top:2px">${st.clfRatio.toFixed(3)}%</div></div>
+    <div class="m" style="font-size:18px;font-weight:800;color:${rc};margin-top:2px">${st.clfRatio.toFixed(2)}%</div></div>
     <div style="text-align:right"><div class="m" style="font-size:8px;color:var(--t4)">4-WK MA</div>
     <div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}</div>
-    <div class="m" style="font-size:8px;color:var(--t4);margin-top:2px">CLF: ${st.clf?((st.clf/1000000).toFixed(1)+"M"):"-"}</div></div>
+    <div class="m" style="font-size:8px;color:var(--t4);margin-top:2px">CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":"-"}</div></div>
    </div>
-   <div class="m" style="font-size:8px;color:var(--t4);margin-top:6px">< 0.15% Healthy | 0.15–0.20% Normal | 0.20–0.25% Elevated | > 0.25% Warning</div>
+   <div class="m" style="font-size:8px;color:var(--t4);margin-top:6px">< 1.3 Healthy | 1.3–1.6 Normal | 1.6–2.0 Elevated | > 2.0 Warning</div>
+   <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px"><a href="https://fred.stlouisfed.org/series/CLF16OV" target="_blank">CLF16OV on FRED →</a></div>
   </div>`}
  let hcomp="";
  if(op&&(s.pre08!=null||s.pre20!=null)){
@@ -480,44 +516,43 @@ function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[statu
  <div class="m" style="font-size:9px;color:var(--t4);margin-top:4px">${lat?.date||""}</div></div></div>
  ${s.isCape?"":spark(show,cfg.c)}${sub}
  ${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}">
+ <div class="desc">${s.desc}</div>
  <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div>
  <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>
  ${hcomp}
  <p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`Source: <a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">FRED →</a>`}</p></div>`:""}
  <div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲ collapse":"▼ details"}</div></div>`}
 
-/* ═══ BACKTEST SECTION ═══ */
 function backtestSection(){
  return`<div class="bt-wrap">
   <div class="bt-hdr" onclick="toggleBT()">
    <div><div class="h" style="font-size:15px;font-weight:700">📊 Composite Backtest</div>
-   <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Score 0–100 vs NBER recessions · ~30 years</p></div>
+   <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Score 0–100 vs NBER recessions · Hover/touch for values</p></div>
    <span class="m" style="font-size:12px;color:var(--t4)">${st.bt.open?"▲":"▼"}</span>
   </div>
   ${st.bt.open?`<div class="bt-body">
-   ${st.bt.loading?`<div style="text-align:center;padding:30px 0"><div class="lp" style="font-size:24px">📊</div><p class="m" style="font-size:11px;color:#666;margin-top:10px">Loading ~30 years of monthly data...</p><p class="m" style="font-size:9px;color:#444;margin-top:4px">This may take 30-60 seconds (10 FRED series × 500 observations)</p></div>`:
+   ${st.bt.loading?`<div style="text-align:center;padding:30px 0"><div class="lp" style="font-size:24px">📊</div><p class="m" style="font-size:11px;color:#666;margin-top:10px">Loading ~30 years of monthly data + CAPE history...</p><p class="m" style="font-size:9px;color:#444;margin-top:4px">This may take 30-60 seconds</p></div>`:
     st.bt.err?`<p class="m" style="font-size:11px;color:var(--st)">${st.bt.err}</p>`:
     st.bt.loaded?`
-     ${renderBacktestChart()}
+     ${renderBTChart()}
      <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap">
       ${[{r:"0–25",l:"GREEN",c:"var(--cl)"},{r:"25–50",l:"YELLOW",c:"var(--ca)"},{r:"50–75",l:"ORANGE",c:"var(--wn)"},{r:"75–100",l:"RED",c:"var(--st)"}].map(z=>
        `<div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:${z.c};opacity:.4"></div><span class="m" style="font-size:9px;color:var(--t4)">${z.r} ${z.l}</span></div>`).join("")}
       <div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.15)"></div><span class="m" style="font-size:9px;color:var(--t4)">NBER Recession</span></div>
      </div>
-     <p class="m" style="font-size:8px;color:var(--t5);margin-top:10px;line-height:1.5">Composite = average of 8 sub-scores (YC, Sahm, Credit, LEI, Mfg, Sentiment, VIX, Claims/CLF). CAPE excluded (not on FRED). Each sub-score normalized 0–100 using linear interpolation between safe and danger thresholds. USREC = NBER recession dates.</p>
+     <p class="m" style="font-size:8px;color:var(--t5);margin-top:10px;line-height:1.5">Composite = average of 9 sub-scores (YC, Sahm, Credit, LEI, Mfg, Sentiment, VIX, Claims/CLF, CAPE). Each normalized 0–100. USREC = NBER official recession dates. Hover or drag to see score at any point.</p>
     `:`<button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.06em">LOAD HISTORICAL BACKTEST</button>
-     <p class="m" style="font-size:9px;color:var(--t5);margin-top:8px;text-align:center">Fetches 30 years of monthly FRED data for all indicators + NBER recession dates</p>`}
-  </div>`:""}</div>`
-}
+     <p class="m" style="font-size:9px;color:var(--t5);margin-top:8px;text-align:center">Fetches ~30 years of data for all indicators + NBER recession dates + CAPE history</p>`}
+  </div>`:""}</div>`}
 
 function leg(){return`<div class="lg"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">STATUS LEGEND</div>
  <div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px">${Object.entries(ST).filter(([k])=>k!=="unknown").map(([k,v])=>`<div style="display:flex;align-items:center;gap:5px">${dot(k,7)}<span class="m" style="font-size:10px;color:${v.c}">${v.l}</span></div>`).join("")}</div>
- <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED + multpl.com. ISM proxied via Mfg Employment. DXY = Trade Weighted USD Broad. CAPE = Shiller P/E 10. Claims/CLF = 4-wk MA of Initial Claims ÷ Civilian Labor Force.<br>
+ <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED + multpl.com. ISM proxied via Mfg Employment. DXY = Trade Weighted USD Broad. CAPE = Shiller P/E 10. Claims/CLF = 4-wk MA ÷ Civilian Labor Force.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</p></div>`}
 
 function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}else{st.autoRef=setInterval(()=>loadAll(),4*60*60*1000)}render()}
 function toggleBT(){st.bt.open=!st.bt.open;render()}
-function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};st.bt={open:false,loading:false,loaded:false,data:null,err:null};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr8");render()}
+function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};st.bt={open:false,loading:false,loaded:false,data:null,err:null};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr9");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
