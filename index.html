@@ -30,6 +30,10 @@
 a{color:var(--ca)}
 .hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}.hcomp-cell{background:rgba(0,0,0,.2);border-radius:6px;padding:6px 8px;text-align:center}
 .ar-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:9px;letter-spacing:.05em}
+.bt-wrap{margin-top:20px;margin-bottom:4px;background:var(--sf);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.bt-hdr{padding:16px 20px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent}
+.bt-body{padding:0 20px 20px}
+.bt-chart{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 @media(max-width:500px){.mg{grid-template-columns:repeat(2,1fr)}.card{padding:14px 16px}.ga{padding:18px 14px}.hcomp{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
@@ -38,56 +42,64 @@ a{color:var(--ca)}
 <script>
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>u];
 
-/* ═══ INDICATORS (9 total — added CAPE) ═══ */
 const S=[
  {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y − 2Y Treasury Spread",u:"%",
   th:"< −0.3 Inverted (Stress) | 0–0.2 Flat (Caution) | > 0.5 Normal",
   hi:"Predicted 8/8 recessions since 1970. Recession arrives after un-inversion.",
   pre08:-0.19,pre20:0.04,pre01:-0.52,
-  ev:v=>v==null?"unknown":v<-.3?"stress":v<0?"warning":v<.2?"caution":v<.5?"watch":"clear"},
+  ev:v=>v==null?"unknown":v<-.3?"stress":v<0?"warning":v<.2?"caution":v<.5?"watch":"clear",
+  // Backtest scoring: 1.5 (safe=0) to -0.5 (danger=100), inverted
+  sc:v=>v==null?null:clamp((1.5-v)/2*100)},
  {k:"sa",f:"SAHMREALTIME",n:"Sahm Rule",s:"Unemployment Rate Momentum",u:" pp",
   th:"≥ 0.50 Recession signal | 0.30–0.50 Approaching | < 0.15 Clear",
   hi:"Triggered every recession since 1950. Only 2 false positives since 1959.",
   pre08:0.53,pre20:0.5,pre01:0.3,
-  ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear"},
+  ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear",
+  sc:v=>v==null?null:clamp(v/0.6*100)},
  {k:"cr",f:"BAMLH0A0HYM2",n:"Credit Spreads",s:"ICE BofA High Yield OAS",u:"%",
   th:"< 3.5% Normal | 3.5–5% Elevated | 5–8% Stress | > 8% Crisis",
   hi:"Hit 10%+ in 2008 and Mar 2020. Credit leads equities by weeks.",
   pre08:7.96,pre20:3.57,pre01:6.45,
-  ev:v=>v==null?"unknown":v>8?"stress":v>5?"warning":v>3.5?"caution":"clear"},
+  ev:v=>v==null?"unknown":v>8?"stress":v>5?"warning":v>3.5?"caution":"clear",
+  sc:v=>v==null?null:clamp((v-3)/7*100)},
  {k:"li",f:"USSLIND",n:"Leading Index",s:"Philly Fed Leading Index",u:"%",
   th:"< −2 Stress | −0.5 to −2 Warning | 0 to −0.5 Caution | > 1 Strong",
   hi:"Negative readings preceded every recession in 50 years.",
   pre08:-1.21,pre20:0.28,pre01:-0.88,
-  ev:v=>v==null?"unknown":v<-2?"stress":v<-.5?"warning":v<0?"caution":v<1?"watch":"clear"},
+  ev:v=>v==null?"unknown":v<-2?"stress":v<-.5?"warning":v<0?"caution":v<1?"watch":"clear",
+  sc:v=>v==null?null:clamp((2-v)/5*100)},
  {k:"mf",f:"MANEMP",n:"Mfg Employment",s:"Manufacturing Jobs (ISM proxy)",u:"K",tr:1,
   th:"3-mo change: losses > 50K = Stress | losses = Caution | gains = Clear",
   hi:"Mfg job losses preceded every recession since 1948.",
-  ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear"},
+  ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear",
+  sc:null}, // scored separately via trend
  {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Univ. of Michigan Index",u:"",
   th:"< 55 Stress | 55–60 Warning | 60–70 Caution | 70–80 Watch | > 80 Healthy",
   hi:"Sharp declines preceded consumer spending pullbacks and recessions.",
   pre08:63.0,pre20:101.0,pre01:94.7,
-  ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear"},
+  ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear",
+  sc:v=>v==null?null:clamp((95-v)/45*100)},
  {k:"vx",f:"VIXCLS",n:"VIX",s:"CBOE Volatility Index",u:"",
   th:"< 15 Complacent | 15–20 Normal | 20–25 Watch | 25–30 Caution | > 30 Warning | > 35 Stress",
   hi:"VIX > 30 preceded every major selloff in 20 years.",
   pre08:23.0,pre20:14.0,pre01:25.5,
-  ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
- {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Initial Claims (Weekly)",u:"K",
-  th:"< 220K Healthy | 220–260K Normal | 260–300K Elevated | > 300K Warning | > 350K Stress",
-  hi:"Weekly leading indicator. Sustained rise above 260K = labor market cracking.",
+  ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear",
+  sc:v=>v==null?null:clamp((v-12)/28*100)},
+ {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Initial Claims + CLF Ratio",u:"",
+  th:"Raw: < 220K Healthy | > 300K Warning | > 350K Stress. Ratio: < 0.15% Healthy | > 0.25% Warning",
+  hi:"Weekly leading indicator. CLF-normalized ratio removes labor force growth distortion.",
   pre08:346,pre20:282,pre01:305,
   ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",
-  divK:true},
+  divK:true,hasCLF:true,
+  sc:null}, // scored via ratio
  {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Cyclically Adjusted P/E (P/E 10)",u:"x",isCape:true,
   th:"< 15 Undervalued | 15–20 Fair | 20–25 Elevated | 25–30 Expensive | 30–38 Very Expensive | > 38 Extreme",
-  hi:"Median: 16.0 | Pre-2000: 44.2 | Pre-2008: 27.3 | Pre-2020: 31.3. High CAPE = further to fall in a crash.",
+  hi:"Median: 16.0 | Pre-2000: 44.2 | Pre-2008: 27.3 | Pre-2020: 31.3. High CAPE = further to fall.",
   pre08:27.3,pre20:31.3,pre01:44.2,
-  ev:v=>v==null?"unknown":v>38?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
+  ev:v=>v==null?"unknown":v>38?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear",
+  sc:v=>v==null?null:clamp((v-15)/25*100)},
 ];
 
-/* ═══ MARKET CONTEXT (6 cells — no Gold, DXY is back) ═══ */
 const MK=[
  {f:"SP500",n:"S&P 500",p:"",d:0,pk:true},
  {f:"NASDAQCOM",n:"NASDAQ",p:"",d:0,pk:true},
@@ -107,17 +119,22 @@ const ST={
 };
 const LV=[
  {x:1,l:"GREEN",s:"Full Offense",c:"#00E676",st:"Buy pullbacks aggressively. Full equity exposure. Lean into growth."},
- {x:3,l:"YELLOW",s:"Proceed with Caution",c:"#FFC107",st:"Tighten stops. Reduce position sizes. Build cash from profits. Favor quality."},
- {x:5,l:"ORANGE",s:"Defensive Mode",c:"#FF9100",st:"Raise cash to 20–30%. Sell speculative positions. Favor dividends & defensives."},
+ {x:3,l:"YELLOW",s:"Proceed with Caution",c:"#FFC107",st:"Tighten stops. Reduce position sizes. Build cash from profits."},
+ {x:5,l:"ORANGE",s:"Defensive Mode",c:"#FF9100",st:"Raise cash to 20–30%. Sell speculative. Favor dividends & defensives."},
  {x:99,l:"RED",s:"Capital Preservation",c:"#FF1744",st:"Raise cash 40–50%. Exit leverage. Hedge. Survive first, profit later."},
 ];
 
-let st={key:localStorage.getItem("rr7")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
- al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,autoRef:null};
+function clamp(v){return Math.max(0,Math.min(100,v))}
+
+let st={key:localStorage.getItem("rr8")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
+ al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,autoRef:null,
+ clf:null,claims4wk:null,clfRatio:null,
+ bt:{open:false,loading:false,loaded:false,data:null,err:null}};
 
 /* ── FRED Fetch ── */
-async function ff(sid,key,lim=24){
- const base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;
+async function ff(sid,key,lim=24,freq=""){
+ let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;
+ if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;
  const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
  for(const i of ord){
   try{const r=await fetch(PX[i](base),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;
@@ -128,38 +145,38 @@ async function ff(sid,key,lim=24){
  throw new Error(sid);
 }
 
-/* ── CAPE Fetch from multpl.com ── */
+/* ── CAPE Fetch ── */
 async function fetchCAPE(){
  const urls=["https://www.multpl.com/shiller-pe","https://www.multpl.com/shiller-pe/table/by-month"];
  for(const url of urls){
   const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
   for(const i of ord){
-   try{
-    const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});
-    if(!r.ok)continue;
+   try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;
     const html=await r.text();
-    // Look for the current value in the HTML
-    // multpl.com displays it as "Current Shiller PE Ratio is XX.XX"
-    const patterns=[
-     /Current\s+Shiller\s+PE\s+Ratio[^0-9]*?([\d]{1,2}\.[\d]{1,2})/i,
-     /id="current"[^>]*>([^<]*[\d]+\.[\d]+)/i,
-     /<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+,?\s*\d{4}<\/td>\s*<td[^>]*>([\d.]+)/i,
-     /([\d]{2}\.[\d]{2})\s*<\/td>/,
-    ];
-    for(const pat of patterns){
-     const m=html.match(pat);
-     if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}
+    const pats=[/Current\s+Shiller\s+PE[^0-9]*([\d]{1,2}\.[\d]{1,2})/i,
+     /<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<]*<\/td>\s*<td[^>]*>\s*([\d]+\.[\d]+)/i,
+     /([\d]{2}\.[\d]{2})\s*<\/td>/];
+    for(const pat of pats){const m=html.match(pat);if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}
    }catch{continue}}}
- // Fallback: try GuruFocus
- try{
-  const r=await fetch(PX[st.px]("https://www.gurufocus.com/economic_indicators/56/sp-500-shiller-cape-ratio"),{signal:AbortSignal.timeout(10000)});
-  if(r.ok){const html=await r.text();const m=html.match(/([\d]{2}\.[\d]{2})/);if(m){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}
- }catch{}
  st.cape=null;
 }
 
+/* ── CLF + 4-week MA ── */
+async function fetchCLF(){
+ try{
+  const clf=await ff("CLF16OV",st.key,3);
+  if(clf.length)st.clf=parseFloat(clf[clf.length-1].value)*1000; // CLF is in thousands
+  const claims=st.d.ic||[];
+  if(claims.length>=4&&st.clf){
+   const last4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
+   st.claims4wk=last4.reduce((a,b)=>a+b,0)/last4.length;
+   st.clfRatio=(st.claims4wk/st.clf*100); // percentage
+  }
+ }catch{st.clf=null;st.claims4wk=null;st.clfRatio=null}
+}
+
 function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};
- let ld=null,ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0){inv=true;ld=d[i].date}else if(inv&&!ud)ud=d[i].date}
+ let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0){inv=true}else if(inv&&!ud)ud=d[i].date}
  return{ycUD:ud,ycInv:inv}}
 function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};
  let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}
@@ -169,15 +186,13 @@ function peakPct(d){if(!d||d.length<10)return null;const v=d.map(x=>parseFloat(x
 
 async function loadAll(){
  st.ld=true;st.err=null;render();let ok=0,fl=[];
- for(const s of S){
-  if(s.isCape)continue; // handled separately
+ for(const s of S){if(s.isCape)continue;
   try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}
   catch{st.d[s.k]=[];fl.push(s.n)}}
  for(const m of MK){try{st.mkF[m.f]=await ff(m.f,st.key,m.pk?260:10);st.mk[m.f]=st.mkF[m.f].slice(-5)}catch{st.mk[m.f]=[];st.mkF[m.f]=[]}}
  await fetchCAPE();
- // Set CAPE data for card display
- if(st.cape){st.d["cape"]=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else{st.d["cape"]=[];fl.push("CAPE")}
- // Evaluate statuses
+ await fetchCLF();
+ if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else{st.d.cape=[];fl.push("CAPE")}
  for(const s of S){const obs=st.d[s.k]||[];
   if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}
   if(s.tr){const v=obs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));st.ss[s.k]=s.ev(null,v.length>=2?v[v.length-1]-v[0]:null)}
@@ -188,6 +203,151 @@ async function loadAll(){
  st.ld=false;render()
 }
 
+/* ═══ BACKTEST ENGINE ═══ */
+async function loadBacktest(){
+ st.bt.loading=true;st.bt.err=null;render();
+ try{
+  // Fetch ~30 years of monthly data for each FRED indicator + USREC + CLF
+  const series={
+   yc:{id:"T10Y2Y",sc:v=>v==null?null:clamp((1.5-v)/2*100)},
+   sa:{id:"SAHMREALTIME",sc:v=>v==null?null:clamp(v/0.6*100)},
+   cr:{id:"BAMLH0A0HYM2",sc:v=>v==null?null:clamp((v-3)/7*100)},
+   li:{id:"USSLIND",sc:v=>v==null?null:clamp((2-v)/5*100)},
+   mf:{id:"MANEMP",sc:null}, // trend-based
+   co:{id:"UMCSENT",sc:v=>v==null?null:clamp((95-v)/45*100)},
+   vx:{id:"VIXCLS",sc:v=>v==null?null:clamp((v-12)/28*100)},
+   ic:{id:"ICSA",sc:null}, // ratio-based
+   clf:{id:"CLF16OV",sc:null},
+   rec:{id:"USREC",sc:null},
+  };
+  const raw={};
+  for(const[k,s] of Object.entries(series)){
+   try{raw[k]=await ff(s.id,st.key,500,"m")}catch{raw[k]=[]}
+  }
+  // Build monthly timeline
+  const allDates=new Set();
+  for(const k of Object.keys(raw)){raw[k].forEach(o=>allDates.add(o.date.substring(0,7)))}
+  const months=[...allDates].sort();
+
+  // Index data by year-month
+  const idx={};
+  for(const[k,obs] of Object.entries(raw)){
+   idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
+
+  // Calculate composite score per month
+  const composite=[];
+  for(const m of months){
+   const scores=[];
+   // Yield curve
+   if(idx.yc[m]!=null&&!isNaN(idx.yc[m]))scores.push(clamp((1.5-idx.yc[m])/2*100));
+   // Sahm
+   if(idx.sa[m]!=null&&!isNaN(idx.sa[m]))scores.push(clamp(idx.sa[m]/0.6*100));
+   // Credit
+   if(idx.cr[m]!=null&&!isNaN(idx.cr[m]))scores.push(clamp((idx.cr[m]-3)/7*100));
+   // Leading
+   if(idx.li[m]!=null&&!isNaN(idx.li[m]))scores.push(clamp((2-idx.li[m])/5*100));
+   // Mfg — 3 month trend
+   const mfKeys=months.filter(x=>x<=m).slice(-4);
+   if(mfKeys.length>=4){
+    const v0=idx.mf[mfKeys[0]],v3=idx.mf[mfKeys[3]];
+    if(v0!=null&&v3!=null){const trend=v3-v0;scores.push(clamp((50-trend)/150*100))}}
+   // Consumer
+   if(idx.co[m]!=null&&!isNaN(idx.co[m]))scores.push(clamp((95-idx.co[m])/45*100));
+   // VIX
+   if(idx.vx[m]!=null&&!isNaN(idx.vx[m]))scores.push(clamp((idx.vx[m]-12)/28*100));
+   // Claims/CLF ratio
+   if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){
+    const ratio=idx.ic[m]/(idx.clf[m]*1000)*100; // CLF in thousands, ICSA in units
+    scores.push(clamp((ratio-0.12)/0.23*100))}
+
+   const avg=scores.length>=3?scores.reduce((a,b)=>a+b,0)/scores.length:null;
+   const rec=idx.rec[m];
+   composite.push({month:m,score:avg,recession:rec===1,count:scores.length});
+  }
+  st.bt.data=composite.filter(c=>c.score!=null);
+  st.bt.loaded=true;
+ }catch(e){st.bt.err="Backtest failed: "+e.message}
+ st.bt.loading=false;render();
+}
+
+function renderBacktestChart(){
+ const data=st.bt.data;if(!data||data.length<12)return`<p class="m" style="font-size:11px;color:var(--t4)">Not enough data for backtest.</p>`;
+ const W=Math.max(660,data.length*2.5),H=220,PAD={t:20,b:40,l:40,r:10};
+ const cw=W-PAD.l-PAD.r,ch=H-PAD.t-PAD.b;
+
+ // Recession bands
+ let recBands="";
+ let inRec=false,recStart=0;
+ for(let i=0;i<data.length;i++){
+  const x=PAD.l+(i/data.length)*cw;
+  if(data[i].recession&&!inRec){inRec=true;recStart=x}
+  if(!data[i].recession&&inRec){inRec=false;recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${x-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="2"/>`}
+ }
+ if(inRec)recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${PAD.l+cw-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="2"/>`;
+
+ // Zone fills
+ const zones=[
+  {y0:0,y1:25,color:"rgba(0,230,118,.06)"},   // Green zone
+  {y0:25,y1:50,color:"rgba(255,193,7,.05)"},   // Yellow zone
+  {y0:50,y1:75,color:"rgba(255,145,0,.05)"},   // Orange zone
+  {y0:75,y1:100,color:"rgba(255,23,68,.06)"},  // Red zone
+ ];
+ let zoneFills="";
+ for(const z of zones){
+  const yt=PAD.t+(1-z.y1/100)*ch,yb=PAD.t+(1-z.y0/100)*ch;
+  zoneFills+=`<rect x="${PAD.l}" y="${yt}" width="${cw}" height="${yb-yt}" fill="${z.color}"/>`}
+
+ // Grid lines + labels
+ let grid="";
+ for(const v of [0,25,50,75,100]){
+  const y=PAD.t+(1-v/100)*ch;
+  grid+=`<line x1="${PAD.l}" y1="${y}" x2="${PAD.l+cw}" y2="${y}" stroke="rgba(255,255,255,.08)" stroke-width="0.5"/>`;
+  grid+=`<text x="${PAD.l-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${v}</text>`}
+
+ // Year labels
+ let yearLabels="";
+ let lastYear="";
+ for(let i=0;i<data.length;i++){
+  const yr=data[i].month.substring(0,4);
+  if(yr!==lastYear&&parseInt(yr)%2===0){
+   const x=PAD.l+(i/data.length)*cw;
+   yearLabels+=`<text x="${x}" y="${H-8}" text-anchor="middle" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${yr}</text>`;
+   yearLabels+=`<line x1="${x}" y1="${PAD.t}" x2="${x}" y2="${PAD.t+ch}" stroke="rgba(255,255,255,.04)" stroke-width="0.5"/>`;
+   lastYear=yr}}
+
+ // Score line
+ const pts=data.map((d,i)=>{
+  const x=PAD.l+(i/data.length)*cw;
+  const y=PAD.t+(1-d.score/100)*ch;
+  return`${x},${y}`}).join(" ");
+
+ // Gradient for the area fill
+ const areaPts=`${PAD.l},${PAD.t+ch} ${pts} ${PAD.l+cw},${PAD.t+ch}`;
+
+ // Color the line based on current score
+ const lastScore=data[data.length-1].score;
+ const lineColor=lastScore>75?"var(--st)":lastScore>50?"var(--wn)":lastScore>25?"var(--ca)":"var(--cl)";
+
+ // Current score callout
+ const lastX=PAD.l+cw;
+ const lastY=PAD.t+(1-lastScore/100)*ch;
+
+ return`<div class="bt-chart"><svg width="${W}" height="${H}" style="display:block">
+  <defs>
+   <linearGradient id="btg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${lineColor}" stop-opacity=".2"/><stop offset="100%" stop-color="${lineColor}" stop-opacity="0"/></linearGradient>
+  </defs>
+  ${zoneFills}${recBands}${grid}${yearLabels}
+  <polygon points="${areaPts}" fill="url(#btg)"/>
+  <polyline points="${pts}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linejoin="round"/>
+  <circle cx="${lastX}" cy="${lastY}" r="4" fill="${lineColor}" stroke="var(--bg)" stroke-width="2"/>
+  <text x="${lastX-8}" y="${lastY-10}" text-anchor="end" fill="${lineColor}" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${lastScore.toFixed(0)}</text>
+  <!-- Legend -->
+  <rect x="${PAD.l+8}" y="${PAD.t+4}" width="8" height="8" fill="rgba(255,255,255,.06)" rx="1"/>
+  <text x="${PAD.l+20}" y="${PAD.t+12}" fill="#555" font-size="8" font-family="JetBrains Mono,monospace">= NBER Recession</text>
+ </svg></div>`;
+}
+
+/* ── Sparkline ── */
 function spark(d,c,w=180,h=42){if(!d||d.length<2)return"";const v=d.map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(v.length<2)return"";
  const mn=Math.min(...v),mx=Math.max(...v),r=mx-mn||1;const pts=v.map((val,i)=>`${(i/(v.length-1))*w},${h-((val-mn)/r)*(h-6)-3}`).join(" ");
  const ly=h-((v[v.length-1]-mn)/r)*(h-6)-3;
@@ -196,26 +356,26 @@ function dot(s,sz=8){const c=(ST[s]||ST.unknown).c;return`<span class="dt" style
 function fD(d){if(!d)return"?";return new Date(d+"T00:00:00").toLocaleDateString("en-US",{month:"short",year:"numeric"})}
 function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00:00:00"))/(1000*60*60*24*30.44))}
 
+/* ── RENDER ── */
 function render(){const a=document.getElementById("app");
  if(!st.key){a.innerHTML=setup();bindSetup();return}
- if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">Loading 9 indicators + 6 market series + CAPE</p></div>`;return}
- a.innerHTML=`<div class="c">${hdr()}${st.err?`<div class="err-box"><p class="m" style="font-size:11px;color:var(--st);line-height:1.5;white-space:pre-line">${st.err}</p></div>`:""}${gauge()}${dynAlert()}${mktB()}<div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div><div style="display:flex;flex-direction:column;gap:10px">${S.map(s=>card(s)).join("")}</div>${leg()}</div>`;
+ if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">9 indicators + market context + CLF ratio</p></div>`;return}
+ a.innerHTML=`<div class="c">${hdr()}${st.err?`<div class="err-box"><p class="m" style="font-size:11px;color:var(--st);line-height:1.5;white-space:pre-line">${st.err}</p></div>`:""}${gauge()}${dynAlert()}${mktB()}<div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div><div style="display:flex;flex-direction:column;gap:10px">${S.map(s=>card(s)).join("")}</div>${backtestSection()}${leg()}</div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}))}
 
 function setup(){return`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center">
  <h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1>
- <p class="m" style="font-size:9px;color:var(--t4);letter-spacing:.12em;margin-bottom:32px">LIVE ECONOMIC INDICATOR DASHBOARD</p>
+ <p class="m" style="font-size:9px;color:var(--t4);letter-spacing:.12em;margin-bottom:32px">LIVE INDICATOR DASHBOARD + BACKTEST</p>
  <div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left">
- <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">Tracks 9 recession indicators with live FRED data + Shiller CAPE. Free API key required.</p>
+ <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">9 recession indicators with live FRED data, CLF-normalized claims, Shiller CAPE, and composite backtest scoring.</p>
  <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block;text-decoration:underline">Get free FRED API key →</a>
  <div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;display:block;margin-bottom:6px">FRED API KEY</label>
  <input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div>
  <button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div>
- <p class="m" style="font-size:8px;color:var(--t5);margin-top:14px">Add to home screen for app-like access on any device</p>
- </div></div>`}
+ <p class="m" style="font-size:8px;color:var(--t5);margin-top:14px">Add to home screen for app-like access</p></div></div>`}
 function bindSetup(){setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;
  i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});
- const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr7",k);loadAll()}};
+ const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr8",k);loadAll()}};
  b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50)}
 
 function hdr(){const t=st.upd?st.upd.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):"";const arOn=!!st.autoRef;
@@ -225,37 +385,47 @@ function hdr(){const t=st.upd?st.upd.toLocaleTimeString([],{hour:'2-digit',minut
  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
  <button onclick="toggleAR()" class="m ar-badge" style="background:${arOn?"rgba(0,230,118,.12)":"rgba(85,85,85,.1)"};border:1px solid ${arOn?"rgba(0,230,118,.3)":"#333"};color:${arOn?"var(--cl)":"var(--t4)"};cursor:pointer">${arOn?"⏱ AUTO":"⏱ OFF"}</button>
  <button onclick="loadAll()" class="m" style="padding:5px 12px;background:#1E1D1A;border:1px solid #2A2825;border-radius:6px;color:#AAA;font-size:10px;cursor:pointer">⟳</button>
- <button onclick="rst()" class="m" style="padding:5px 8px;background:transparent;border:1px solid #222;border-radius:6px;color:var(--t5);font-size:10px;cursor:pointer">✕</button>
- </div></div>`}
+ <button onclick="rst()" class="m" style="padding:5px 8px;background:transparent;border:1px solid #222;border-radius:6px;color:var(--t5);font-size:10px;cursor:pointer">✕</button></div></div>`}
 
 function gauge(){const ss=S.map(s=>st.ss[s.k]||"unknown");
  const sv=ss.filter(s=>s==="stress"||s==="warning").length,ca=ss.filter(s=>s==="caution").length,wa=ss.filter(s=>s==="watch").length,al=sv+ca;
  let lv=LV[0];for(const o of LV)if(al<=o.x){lv=o;break}if(al>=6)lv=LV[3];
+ // Current composite score
+ let compScore=null;
+ const scores=[];
+ S.forEach(s=>{if(s.sc&&!s.isCape){const obs=st.d[s.k]||[];const lat=obs.length?parseFloat(obs[obs.length-1].value):null;const sc=s.sc(lat);if(sc!=null)scores.push(sc)}
+  if(s.isCape&&st.cape){const sc=s.sc(st.cape);if(sc!=null)scores.push(sc)}});
+ if(st.clfRatio!=null)scores.push(clamp((st.clfRatio-0.12)/0.23*100));
+ if(scores.length>=3)compScore=scores.reduce((a,b)=>a+b,0)/scores.length;
+
  return`<div class="ga" style="border:1px solid ${lv.c}22"><div class="gb"></div>
  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
  <div><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.14em;margin-bottom:6px">RECESSION RISK</div>
  <div style="display:flex;align-items:center;gap:12px"><span class="h" style="font-size:32px;font-weight:800;color:${lv.c};line-height:1">${lv.l}</span><span style="font-size:13px;color:var(--t3);border-left:1px solid #2A2825;padding-left:12px">${lv.s}</span></div></div>
- <div style="display:flex;gap:14px">${[{n:sv,l:"Alerts",c:"var(--st)"},{n:ca,l:"Cautions",c:"var(--ca)"},{n:wa,l:"Watch",c:"var(--wa)"}].map(x=>`<div style="text-align:center"><div class="m" style="font-size:20px;font-weight:800;color:${x.c}">${x.n}</div><div class="m" style="font-size:8px;color:var(--t4)">${x.l}</div></div>`).join("")}</div></div>
+ <div style="display:flex;gap:14px">
+ ${compScore!=null?`<div style="text-align:center"><div class="m" style="font-size:20px;font-weight:800;color:${compScore>75?"var(--st)":compScore>50?"var(--wn)":compScore>25?"var(--ca)":"var(--cl)"}">${compScore.toFixed(0)}</div><div class="m" style="font-size:8px;color:var(--t4)">Score</div></div>`:""}
+ ${[{n:sv,l:"Alerts",c:"var(--st)"},{n:ca,l:"Cautions",c:"var(--ca)"},{n:wa,l:"Watch",c:"var(--wa)"}].map(x=>`<div style="text-align:center"><div class="m" style="font-size:20px;font-weight:800;color:${x.c}">${x.n}</div><div class="m" style="font-size:8px;color:var(--t4)">${x.l}</div></div>`).join("")}
+ </div></div>
  <div style="margin-top:14px;padding:10px 12px;background:${lv.c}0C;border-radius:8px;border:1px solid ${lv.c}15">
  <span class="m" style="font-size:9px;color:${lv.c};letter-spacing:.06em">STRATEGY</span>
  <p style="font-size:12px;color:var(--t2);margin-top:4px;line-height:1.6">${lv.st}</p></div></div>`}
 
 function dynAlert(){const ad=st.al;const sahmD=st.d.sa||[],ycD=st.d.yc||[];
- const sv=sahmD.length?parseFloat(sahmD[sahmD.length-1].value):null;
- const yv=ycD.length?parseFloat(ycD[ycD.length-1].value):null;
+ const sv=sahmD.length?parseFloat(sahmD[sahmD.length-1].value):null;const yv=ycD.length?parseFloat(ycD[ycD.length-1].value):null;
  const both=ad.ycUD&&ad.sahmD,either=ad.ycUD||ad.sahmD;
  let bdr="rgba(144,164,174,.15)",bgc="rgba(144,164,174,.04)",ic="var(--wa)",ttl="PATTERN ANALYSIS";
  if(both){bdr="rgba(255,145,0,.2)";bgc="rgba(255,145,0,.05)";ic="var(--wn)";ttl="⚡ DUAL INDICATOR ALERT"}
  else if(either){bdr="rgba(255,193,7,.2)";bgc="rgba(255,193,7,.05)";ic="var(--ca)";ttl="PATTERN ALERT"}
  let ms=[];
  if(ad.ycInv&&ad.ycUD){const mo=mAgo(ad.ycUD),rem=mo!=null?18-mo:null,inW=rem!=null&&rem>0;
-  ms.push(`<strong style="color:var(--ca)">Yield curve un-inverted ${fD(ad.ycUD)}</strong> (${mo} mo ago). ${inW?`Within recession window (${rem} mo left).`:"18-mo window passed. Delayed effects possible."} Current: ${yv!=null?yv.toFixed(2)+"%":"N/A"}.`)}
- else if(yv!=null&&yv<0)ms.push(`<strong style="color:var(--st)">Yield curve inverted</strong> at ${yv.toFixed(2)}%. Recession follows 6–18 mo after un-inversion.`);
- else ms.push(`Yield curve positive at ${yv!=null?yv.toFixed(2)+"%":"N/A"}. No recent inversion in data.`);
- if(ad.sahmD)ms.push(`<strong style="color:var(--ca)">Sahm Rule triggered ${fD(ad.sahmD)}</strong> (peak: ${ad.sahmPk!=null?ad.sahmPk.toFixed(2):"?"}). Current: ${sv!=null?sv.toFixed(2):"N/A"}. ${sv!=null&&sv<.5?"Retreated — only 2 false positives since 1959.":"Signal active."}`);
- else ms.push(`Sahm Rule at ${sv!=null?sv.toFixed(2):"N/A"} — ${sv!=null&&sv>=.3?"approaching":"below"} 0.50 threshold.`);
- if(st.cape)ms.push(`Shiller CAPE at <strong style="color:${st.cape>30?"var(--wn)":st.cape>25?"var(--ca)":"var(--t2)"}">${st.cape.toFixed(1)}x</strong> (median: 16). ${st.cape>30?"Elevated valuations amplify downside risk in a recession.":"Valuations are a factor to monitor."}`);
- if(both)ms.push(`<span style="color:var(--wn)">Both yield curve and Sahm Rule fired — preceded every major recession since 1970.</span>`);
+  ms.push(`<strong style="color:var(--ca)">Yield curve un-inverted ${fD(ad.ycUD)}</strong> (${mo} mo ago). ${inW?`Within recession window (${rem} mo left).`:"18-mo window passed."} Current: ${yv!=null?yv.toFixed(2)+"%":"N/A"}.`)}
+ else if(yv!=null&&yv<0)ms.push(`<strong style="color:var(--st)">Yield curve inverted</strong> at ${yv.toFixed(2)}%.`);
+ else ms.push(`Yield curve positive at ${yv!=null?yv.toFixed(2)+"%":"N/A"}.`);
+ if(ad.sahmD)ms.push(`<strong style="color:var(--ca)">Sahm Rule triggered ${fD(ad.sahmD)}</strong> (peak: ${ad.sahmPk!=null?ad.sahmPk.toFixed(2):"?"}). Current: ${sv!=null?sv.toFixed(2):"N/A"}. ${sv!=null&&sv<.5?"Retreated.":"Active."}`);
+ else ms.push(`Sahm Rule at ${sv!=null?sv.toFixed(2):"N/A"} — ${sv!=null&&sv>=.3?"approaching":"below"} 0.50.`);
+ if(st.cape)ms.push(`CAPE at <strong style="color:${st.cape>30?"var(--wn)":"var(--t2)"}">${st.cape.toFixed(1)}x</strong> (median 16). ${st.cape>30?"Elevated valuations amplify downside.":""}`);
+ if(st.clfRatio!=null)ms.push(`Claims/CLF ratio: <strong style="color:${st.clfRatio>.20?"var(--wn)":"var(--t2)"}">${(st.clfRatio).toFixed(3)}%</strong> (4-wk MA: ${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}). ${st.clfRatio>.20?"Elevated for current labor force size.":"Within normal range."}`);
+ if(both)ms.push(`<span style="color:var(--wn)">Both yield curve and Sahm Rule fired — preceded every recession since 1970.</span>`);
  return`<div class="ab" style="background:${bgc};border:1px solid ${bdr}">
  <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap"><span style="font-size:13px">⚠</span>
  <span class="m" style="font-size:10px;font-weight:700;color:${ic};letter-spacing:.08em">${ttl}</span>
@@ -276,11 +446,24 @@ function mktB(){return`<div class="mg">${MK.map(m=>{
 
 function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[status]||ST.unknown;
  const show=d.slice(-24);const lat=d.length?d[d.length-1]:null;const val=lat?parseFloat(lat.value):null;const op=st.ex[s.k];
- let disp="—";
+ let disp="—",sub="";
  if(s.isCape&&st.cape)disp=st.cape.toFixed(1);
  else if(s.tr&&d.length>=3){const r=d.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(r.length>=2){const c=((r[r.length-1]-r[0])/1000).toFixed(0);disp=`${c>0?"+":""}${c}K`}}
  else if(s.divK&&val!=null&&!isNaN(val))disp=(val/1000).toFixed(0);
  else if(val!=null&&!isNaN(val))disp=val.toFixed(2);
+ // CLF ratio subtitle for jobless claims
+ if(s.hasCLF&&st.clfRatio!=null){
+  const rc=st.clfRatio>.25?"var(--st)":st.clfRatio>.20?"var(--wn)":st.clfRatio>.15?"var(--ca)":"var(--cl)";
+  sub=`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.25);border-radius:6px">
+   <div style="display:flex;justify-content:space-between;align-items:center">
+    <div><div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.08em">CLAIMS / CLF RATIO</div>
+    <div class="m" style="font-size:18px;font-weight:800;color:${rc};margin-top:2px">${st.clfRatio.toFixed(3)}%</div></div>
+    <div style="text-align:right"><div class="m" style="font-size:8px;color:var(--t4)">4-WK MA</div>
+    <div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}</div>
+    <div class="m" style="font-size:8px;color:var(--t4);margin-top:2px">CLF: ${st.clf?((st.clf/1000000).toFixed(1)+"M"):"-"}</div></div>
+   </div>
+   <div class="m" style="font-size:8px;color:var(--t4);margin-top:6px">< 0.15% Healthy | 0.15–0.20% Normal | 0.20–0.25% Elevated | > 0.25% Warning</div>
+  </div>`}
  let hcomp="";
  if(op&&(s.pre08!=null||s.pre20!=null)){
   hcomp=`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:6px">PRE-RECESSION LEVELS</div><div class="hcomp">
@@ -295,21 +478,46 @@ function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[statu
  <p class="m" style="font-size:10px;color:#666">${s.s}</p></div>
  <div style="text-align:right;flex-shrink:0"><div class="m" style="font-size:26px;font-weight:800;color:${cfg.c};line-height:1.1">${disp}<span style="font-size:11px;opacity:.5">${s.u}</span></div>
  <div class="m" style="font-size:9px;color:var(--t4);margin-top:4px">${lat?.date||""}</div></div></div>
- ${s.isCape?"":spark(show,cfg.c)}
+ ${s.isCape?"":spark(show,cfg.c)}${sub}
  ${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}">
  <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div>
  <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>
  ${hcomp}
- <p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`Source: <a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com/shiller-pe →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">View on FRED →</a>`}</p></div>`:""}
+ <p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`Source: <a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">FRED →</a>`}</p></div>`:""}
  <div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲ collapse":"▼ details"}</div></div>`}
+
+/* ═══ BACKTEST SECTION ═══ */
+function backtestSection(){
+ return`<div class="bt-wrap">
+  <div class="bt-hdr" onclick="toggleBT()">
+   <div><div class="h" style="font-size:15px;font-weight:700">📊 Composite Backtest</div>
+   <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Score 0–100 vs NBER recessions · ~30 years</p></div>
+   <span class="m" style="font-size:12px;color:var(--t4)">${st.bt.open?"▲":"▼"}</span>
+  </div>
+  ${st.bt.open?`<div class="bt-body">
+   ${st.bt.loading?`<div style="text-align:center;padding:30px 0"><div class="lp" style="font-size:24px">📊</div><p class="m" style="font-size:11px;color:#666;margin-top:10px">Loading ~30 years of monthly data...</p><p class="m" style="font-size:9px;color:#444;margin-top:4px">This may take 30-60 seconds (10 FRED series × 500 observations)</p></div>`:
+    st.bt.err?`<p class="m" style="font-size:11px;color:var(--st)">${st.bt.err}</p>`:
+    st.bt.loaded?`
+     ${renderBacktestChart()}
+     <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap">
+      ${[{r:"0–25",l:"GREEN",c:"var(--cl)"},{r:"25–50",l:"YELLOW",c:"var(--ca)"},{r:"50–75",l:"ORANGE",c:"var(--wn)"},{r:"75–100",l:"RED",c:"var(--st)"}].map(z=>
+       `<div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:${z.c};opacity:.4"></div><span class="m" style="font-size:9px;color:var(--t4)">${z.r} ${z.l}</span></div>`).join("")}
+      <div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.15)"></div><span class="m" style="font-size:9px;color:var(--t4)">NBER Recession</span></div>
+     </div>
+     <p class="m" style="font-size:8px;color:var(--t5);margin-top:10px;line-height:1.5">Composite = average of 8 sub-scores (YC, Sahm, Credit, LEI, Mfg, Sentiment, VIX, Claims/CLF). CAPE excluded (not on FRED). Each sub-score normalized 0–100 using linear interpolation between safe and danger thresholds. USREC = NBER recession dates.</p>
+    `:`<button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.06em">LOAD HISTORICAL BACKTEST</button>
+     <p class="m" style="font-size:9px;color:var(--t5);margin-top:8px;text-align:center">Fetches 30 years of monthly FRED data for all indicators + NBER recession dates</p>`}
+  </div>`:""}</div>`
+}
 
 function leg(){return`<div class="lg"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">STATUS LEGEND</div>
  <div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px">${Object.entries(ST).filter(([k])=>k!=="unknown").map(([k,v])=>`<div style="display:flex;align-items:center;gap:5px">${dot(k,7)}<span class="m" style="font-size:10px;color:${v.c}">${v.l}</span></div>`).join("")}</div>
- <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED + multpl.com. ISM proxied via Mfg Employment. DXY = Trade Weighted USD Broad. CAPE = Shiller P/E 10.<br>
- <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Review monthly · Not financial advice.</p></div>`}
+ <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED + multpl.com. ISM proxied via Mfg Employment. DXY = Trade Weighted USD Broad. CAPE = Shiller P/E 10. Claims/CLF = 4-wk MA of Initial Claims ÷ Civilian Labor Force.<br>
+ <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</p></div>`}
 
 function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}else{st.autoRef=setInterval(()=>loadAll(),4*60*60*1000)}render()}
-function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr7");render()}
+function toggleBT(){st.bt.open=!st.bt.open;render()}
+function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};st.bt={open:false,loading:false,loaded:false,data:null,err:null};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr8");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
