@@ -11,7 +11,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📡</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0E0D0B;--sf:rgba(14,13,11,.8);--bd:#1E1D1A;--tx:#E8E6E3;--t2:#AAA;--t3:#777;--t4:#555;--t5:#333;--cl:#00E676;--wa:#90A4AE;--ca:#FFC107;--wn:#FF9100;--st:#FF1744}
+:root{--bg:#0E0D0B;--sf:rgba(14,13,11,.8);--bd:#1E1D1A;--tx:#E8E6E3;--t2:#AAA;--t3:#777;--t4:#555;--t5:#333;--cl:#00E676;--wa:#78909C;--ca:#FFC107;--wn:#FF9100;--st:#FF1744}
 *{margin:0;padding:0;box-sizing:border-box}body{background:var(--bg);color:var(--tx);font-family:'DM Sans',sans-serif;min-height:100vh;-webkit-text-size-adjust:100%}
 .m{font-family:'JetBrains Mono','Fira Code',monospace}.h{font-family:'Space Grotesk',sans-serif}.c{max-width:720px;margin:0 auto;padding:16px 16px 60px}
 .card{border-radius:12px;padding:18px 20px;cursor:pointer;transition:border-color .25s;-webkit-tap-highlight-color:transparent}
@@ -33,417 +33,370 @@ a{color:var(--ca)}
 .bt-wrap{margin-top:20px;margin-bottom:4px;background:var(--sf);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
 .bt-hdr{padding:16px 20px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent}
 .bt-body{padding:0 20px 20px}
-.bt-chart{position:relative;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
-.bt-tooltip{position:absolute;pointer-events:none;background:rgba(14,13,11,.95);border:1px solid #444;border-radius:6px;padding:6px 10px;z-index:10;white-space:nowrap;transform:translateX(-50%);transition:opacity .15s}
+.bt-scroll{position:relative;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:#333 transparent}
+.bt-scroll::-webkit-scrollbar{height:6px}.bt-scroll::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
 .desc{font-size:12px;color:#888;line-height:1.6;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,.05)}
-@media(max-width:500px){.mg{grid-template-columns:repeat(2,1fr)}.card{padding:14px 16px}.ga{padding:18px 14px}.hcomp{grid-template-columns:repeat(2,1fr)}}
+.mkt-sig{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px}
+.mkt-sig-card{border-radius:10px;padding:12px 14px}
+/* Toggle buttons — always visible */
+.tg{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:5px;font-size:9px;font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;font-family:'JetBrains Mono',monospace;letter-spacing:.03em;-webkit-tap-highlight-color:transparent}
+.tg-on{color:var(--bg)!important;font-weight:800}
+.tg-off{opacity:.5}
+@media(max-width:500px){.mg{grid-template-columns:repeat(2,1fr)}.card{padding:14px 16px}.ga{padding:18px 14px}.hcomp{grid-template-columns:repeat(2,1fr)}.mkt-sig{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div id="app"></div>
+<!-- Tooltip: fixed position, outside all scroll containers -->
+<div id="bt-tip" style="position:fixed;display:none;pointer-events:none;background:rgba(10,10,8,.97);border:1px solid #555;border-radius:7px;padding:8px 12px;z-index:999;max-width:260px">
+ <div class="m" style="font-size:11px;font-weight:700" id="tip-sc"></div>
+ <div class="m" style="font-size:9px;color:var(--t3);margin-top:2px" id="tip-dt"></div>
+ <div class="m" style="font-size:9px;margin-top:1px" id="tip-sub"></div>
+ <div class="m" style="font-size:8px;margin-top:1px" id="tip-rc"></div>
+</div>
 <script>
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
 const S=[
- {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y − 2Y Treasury Spread",u:"%",
-  desc:"Measures the difference between 10-year and 2-year Treasury yields. When short-term rates exceed long-term rates (inversion), it signals markets expect economic weakness ahead. The recession typically arrives 6–18 months after the curve un-inverts back to positive.",
+ {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y − 2Y Treasury Spread",u:"%",tier:"leading",btColor:"#42A5F5",
+  desc:"Measures the gap between 10-year and 2-year Treasury yields. Inversion (short > long) signals markets expect weakness. Recession arrives 6–18 months after un-inversion — the earliest warning signal.",
   th:"< −0.3 Inverted (Stress) | 0–0.2 Flat (Caution) | > 0.5 Normal",
-  hi:"Predicted 8/8 recessions since 1970. Recession arrives after un-inversion.",
-  pre08:-0.19,pre20:0.04,pre01:-0.52,
+  hi:"Predicted 8/8 recessions since 1970. Leads by 6–18 months.",pre08:-0.19,pre20:0.04,pre01:-0.52,
   ev:v=>v==null?"unknown":v<-.3?"stress":v<0?"warning":v<.2?"caution":v<.5?"watch":"clear",
   sc:v=>v==null?null:clamp((1.5-v)/2*100)},
- {k:"sa",f:"SAHMREALTIME",n:"Sahm Rule",s:"Unemployment Rate Momentum",u:" pp",
-  desc:"Created by economist Claudia Sahm. Measures the 3-month moving average of the unemployment rate vs. its 12-month low. When the gap reaches 0.50 percentage points, it signals a recession has begun or is imminent. Designed to trigger early enough for policy response.",
-  th:"≥ 0.50 Recession signal | 0.30–0.50 Approaching | < 0.15 Clear",
-  hi:"Triggered every recession since 1950. Only 2 false positives since 1959.",
-  pre08:0.53,pre20:0.5,pre01:0.3,
-  ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear",
-  sc:v=>v==null?null:clamp(v/0.6*100)},
- {k:"cr",f:"BAMLH0A0HYM2",n:"Credit Spreads",s:"ICE BofA High Yield OAS",u:"%",
-  desc:"Tracks the yield premium investors demand to hold risky corporate bonds over safe Treasuries. Widening spreads mean the bond market is pricing in higher default risk — a sign that credit conditions are tightening and economic stress is building. Credit markets often lead stocks by weeks.",
+ {k:"cr",f:"BAMLH0A0HYM2",n:"Credit Spreads",s:"ICE BofA High Yield OAS",u:"%",tier:"leading",btColor:"#26C6DA",
+  desc:"Yield premium on risky corporate bonds over Treasuries. Widening = bond market pricing higher default risk. Credit sees stress before stocks, often by weeks.",
   th:"< 3.5% Normal | 3.5–5% Elevated | 5–8% Stress | > 8% Crisis",
-  hi:"Hit 10%+ in 2008 and Mar 2020. Credit leads equities by weeks.",
-  pre08:7.96,pre20:3.57,pre01:6.45,
+  hi:"10%+ in 2008 and Mar 2020. Credit leads equities.",pre08:7.96,pre20:3.57,pre01:6.45,
   ev:v=>v==null?"unknown":v>8?"stress":v>5?"warning":v>3.5?"caution":"clear",
   sc:v=>v==null?null:clamp((v-3)/7*100)},
- {k:"li",f:"USSLIND",n:"Leading Index",s:"Philly Fed Leading Index",u:"%",
-  desc:"A composite index from the Philadelphia Federal Reserve that combines multiple forward-looking economic indicators (new orders, building permits, interest rate spreads, employment data) into a single reading. Negative values signal the economy is likely to contract in coming months.",
-  th:"< −2 Stress | −0.5 to −2 Warning | 0 to −0.5 Caution | > 1 Strong",
-  hi:"Negative readings preceded every recession in 50 years.",
-  pre08:-1.21,pre20:0.28,pre01:-0.88,
-  ev:v=>v==null?"unknown":v<-2?"stress":v<-.5?"warning":v<0?"caution":v<1?"watch":"clear",
-  sc:v=>v==null?null:clamp((2-v)/5*100)},
- {k:"mf",f:"MANEMP",n:"Mfg Employment",s:"Manufacturing Jobs (ISM proxy)",u:"K",tr:1,
-  desc:"Tracks total manufacturing employment in the U.S. Manufacturing is cyclically sensitive and tends to contract before the broader economy. Used as a proxy for the proprietary ISM Manufacturing PMI. The 3-month change in employment reveals the trend direction.",
+ {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Initial Claims + CLF Ratio",u:"",tier:"leading",btColor:"#66BB6A",
+  desc:"Weekly first-time unemployment filings — fastest labor indicator. CLF ratio normalizes against workforce size. Rising claims = employers cutting, often before official recession.",
+  th:"Raw: < 220K Healthy | > 300K Warning. Ratio: < 1.3 Healthy | > 2.0 Warning",
+  hi:"Weekly leading indicator. CLF ratio removes workforce growth distortion.",pre08:346,pre20:282,pre01:305,
+  ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",
+  divK:true,hasCLF:true,sc:null},
+ {k:"sa",f:"SAHMREALTIME",n:"Sahm Rule",s:"Unemployment Rate Momentum",u:" pp",tier:"confirming",btColor:"#AB47BC",
+  desc:"3-month moving average of unemployment vs 12-month low. At 0.50pp, recession has begun or is imminent. Fires later than leading indicators but with much higher conviction — only 2 false positives since 1959.",
+  th:"≥ 0.50 Recession signal | 0.30–0.50 Approaching | < 0.15 Clear",
+  hi:"Triggered every recession since 1950.",pre08:0.53,pre20:0.5,pre01:0.3,
+  ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear",
+  sc:v=>v==null?null:clamp(v/0.6*100)},
+ {k:"mf",f:"MANEMP",n:"Mfg Employment",s:"Manufacturing Jobs (ISM proxy)",u:"K",tr:1,tier:"confirming",btColor:"#EC407A",
+  desc:"Total U.S. manufacturing employment. Manufacturing contracts before the broader economy. 3-month change reveals trend. Proxy for proprietary ISM PMI. Sustained losses confirm contraction.",
   th:"3-mo change: losses > 50K = Stress | losses = Caution | gains = Clear",
   hi:"Mfg job losses preceded every recession since 1948.",
-  ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear",
-  sc:null},
- {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Univ. of Michigan Index",u:"",
-  desc:"Monthly survey of U.S. households measuring confidence in personal finances, business conditions, and buying attitudes. Consumer spending drives ~70% of GDP, so when sentiment drops sharply, spending pullbacks and recession often follow. Watch the gap between Expectations and Present Situation components.",
+  ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear",sc:null},
+ {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Univ. of Michigan Index",u:"",tier:"confirming",btColor:"#FF7043",
+  desc:"Monthly household survey on finances, business outlook, buying attitudes. Consumer spending = ~70% of GDP. Cratering sentiment → spending pullbacks → recession. Watch Expectations vs Present Situation gap.",
   th:"< 55 Stress | 55–60 Warning | 60–70 Caution | 70–80 Watch | > 80 Healthy",
-  hi:"Sharp declines preceded consumer spending pullbacks and recessions.",
-  pre08:63.0,pre20:101.0,pre01:94.7,
+  hi:"Sharp declines preceded spending pullbacks and recessions.",pre08:63.0,pre20:101.0,pre01:94.7,
   ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear",
   sc:v=>v==null?null:clamp((95-v)/45*100)},
- {k:"vx",f:"VIXCLS",n:"VIX",s:"CBOE Volatility Index",u:"",
-  desc:"The 'fear gauge' — measures expected 30-day volatility of the S&P 500 derived from options prices. High VIX means options traders are paying up for protection, signaling fear and uncertainty. VIX in backwardation (near-term > long-term) is an even stronger stress signal.",
-  th:"< 15 Complacent | 15–20 Normal | 20–25 Watch | 25–30 Caution | > 30 Warning | > 35 Stress",
-  hi:"VIX > 30 preceded every major selloff in 20 years.",
-  pre08:23.0,pre20:14.0,pre01:25.5,
+ {k:"li",f:"USSLIND",n:"Leading Index",s:"Philly Fed Leading Index",u:"%",tier:"confirming",btColor:"#FFCA28",
+  desc:"Philly Fed composite of new orders, permits, rate spreads, employment. Some overlap with other indicators but adds breadth. Persistent negative = confirms recession trajectory.",
+  th:"< −2 Stress | −0.5 to −2 Warning | 0 to −0.5 Caution | > 1 Strong",
+  hi:"Negative readings preceded every recession in 50 years.",pre08:-1.21,pre20:0.28,pre01:-0.88,
+  ev:v=>v==null?"unknown":v<-2?"stress":v<-.5?"warning":v<0?"caution":v<1?"watch":"clear",
+  sc:v=>v==null?null:clamp((2-v)/5*100)},
+ {k:"vx",f:"VIXCLS",n:"VIX",s:"CBOE Volatility Index",u:"",tier:"market",btColor:"#EF5350",
+  desc:"Expected 30-day S&P 500 volatility from options. Doesn't predict recessions — signals panic and opportunity. VIX > 40 = capitulation (buy). VIX > 30 sustained = stress (reduce exposure).",
+  th:"< 15 Complacent | 15–20 Normal | 20–25 Watch | 25–30 Caution | > 30 Sell | > 40 Buy (capitulation)",
+  hi:"VIX > 40 marked buying opportunities (2008, 2020, 2022).",pre08:23.0,pre20:14.0,pre01:25.5,
   ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear",
   sc:v=>v==null?null:clamp((v-12)/28*100)},
- {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Initial Claims + CLF Ratio",u:"",
-  desc:"Weekly count of first-time unemployment insurance filings. The fastest-updating labor market indicator. The Claims/CLF ratio normalizes against the Civilian Labor Force to account for workforce growth — 300K claims meant more when the labor force was 130M than at today's 170M.",
-  th:"Raw: < 220K Healthy | > 300K Warning. Ratio: < 1.3 Healthy | 1.3–1.6 Normal | > 2.0 Warning",
-  hi:"Weekly leading indicator. CLF-normalized ratio removes labor force growth distortion.",
-  pre08:346,pre20:282,pre01:305,
-  ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",
-  divK:true,hasCLF:true,
-  sc:null},
- {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Cyclically Adjusted P/E (P/E 10)",u:"x",isCape:true,
-  desc:"Robert Shiller's valuation metric — S&P 500 price divided by average inflation-adjusted earnings over 10 years. Smooths out business cycle fluctuations to reveal whether the market is fundamentally cheap or expensive. Doesn't time crashes, but tells you how far the market could fall when one hits. High CAPE = more downside risk.",
-  th:"< 15 Undervalued | 15–20 Fair | 20–25 Elevated | 25–30 Expensive | 30–38 V. Expensive | > 38 Extreme",
-  hi:"Median: 16.0 | Pre-2000: 44.2 | Pre-2008: 27.3 | Pre-2020: 31.3. High CAPE = further to fall.",
-  pre08:27.3,pre20:31.3,pre01:44.2,
+ {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Cyclically Adjusted P/E (P/E 10)",u:"x",isCape:true,tier:"market",btColor:"#FFA726",
+  desc:"S&P 500 price ÷ 10-year inflation-adjusted earnings. Doesn't time crashes but measures how far markets could fall. High CAPE = more downside risk, lower forward returns. Use for position sizing.",
+  th:"< 15 Undervalued (buy) | 15–20 Fair | 20–25 Elevated | > 30 Expensive (reduce) | > 38 Extreme",
+  hi:"Median: 16 | Pre-2000: 44.2 | Pre-2008: 27.3 | Pre-2020: 31.3.",pre08:27.3,pre20:31.3,pre01:44.2,
   ev:v=>v==null?"unknown":v>38?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear",
   sc:v=>v==null?null:clamp((v-15)/25*100)},
 ];
 
-const MK=[
- {f:"SP500",n:"S&P 500",p:"",d:0,pk:true},{f:"NASDAQCOM",n:"NASDAQ",p:"",d:0,pk:true},
- {f:"DCOILBRENTEU",n:"Brent Oil",p:"$",d:2},{f:"DGS10",n:"10Y Yield",p:"",x:"%",d:2},
- {f:"DFF",n:"Fed Funds",p:"",x:"%",d:2},{f:"DTWEXBGS",n:"DXY Dollar",p:"",d:1},
-];
+const TIERS={leading:{label:"LEADING",color:"#42A5F5",desc:"Early warning — fires before recession"},confirming:{label:"CONFIRMING",color:"#AB47BC",desc:"Validates recession underway"},market:{label:"MARKET",color:"#FFA726",desc:"Buy/sell timing signals"}};
+const MK=[{f:"SP500",n:"S&P 500",p:"",d:0,pk:true},{f:"NASDAQCOM",n:"NASDAQ",p:"",d:0,pk:true},{f:"DCOILBRENTEU",n:"Brent Oil",p:"$",d:2},{f:"DGS10",n:"10Y Yield",p:"",x:"%",d:2},{f:"DFF",n:"Fed Funds",p:"",x:"%",d:2},{f:"DTWEXBGS",n:"DXY Dollar",p:"",d:1}];
+const ST={clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:"CLEAR"},watch:{c:"#78909C",bg:"rgba(120,144,156,.06)",b:"rgba(120,144,156,.18)",l:"WATCH"},caution:{c:"#FFC107",bg:"rgba(255,193,7,.07)",b:"rgba(255,193,7,.22)",l:"CAUTION"},warning:{c:"#FF9100",bg:"rgba(255,145,0,.07)",b:"rgba(255,145,0,.22)",l:"WARNING"},stress:{c:"#FF1744",bg:"rgba(255,23,68,.07)",b:"rgba(255,23,68,.22)",l:"STRESS"},unknown:{c:"#555",bg:"rgba(85,85,85,.05)",b:"rgba(85,85,85,.15)",l:"—"}};
+const LV=[{x:1,l:"GREEN",s:"Full Offense",c:"#00E676",st:"Buy pullbacks aggressively. Full equity exposure."},{x:3,l:"YELLOW",s:"Caution",c:"#FFC107",st:"Tighten stops. Reduce size. Build cash from profits."},{x:5,l:"ORANGE",s:"Defensive",c:"#FF9100",st:"Cash 20–30%. Sell speculative. Favor dividends."},{x:99,l:"RED",s:"Preservation",c:"#FF1744",st:"Cash 40–50%. Exit leverage. Hedge. Survive first."}];
 
-const ST={
- clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:"CLEAR"},
- watch:{c:"#78909C",bg:"rgba(120,144,156,.06)",b:"rgba(120,144,156,.18)",l:"WATCH"},
- caution:{c:"#FFC107",bg:"rgba(255,193,7,.07)",b:"rgba(255,193,7,.22)",l:"CAUTION"},
- warning:{c:"#FF9100",bg:"rgba(255,145,0,.07)",b:"rgba(255,145,0,.22)",l:"WARNING"},
- stress:{c:"#FF1744",bg:"rgba(255,23,68,.07)",b:"rgba(255,23,68,.22)",l:"STRESS"},
- unknown:{c:"#555",bg:"rgba(85,85,85,.05)",b:"rgba(85,85,85,.15)",l:"—"},
-};
-const LV=[
- {x:1,l:"GREEN",s:"Full Offense",c:"#00E676",st:"Buy pullbacks aggressively. Full equity exposure. Lean into growth."},
- {x:3,l:"YELLOW",s:"Proceed with Caution",c:"#FFC107",st:"Tighten stops. Reduce position sizes. Build cash from profits."},
- {x:5,l:"ORANGE",s:"Defensive Mode",c:"#FF9100",st:"Raise cash to 20–30%. Sell speculative. Favor dividends & defensives."},
- {x:99,l:"RED",s:"Capital Preservation",c:"#FF1744",st:"Raise cash 40–50%. Exit leverage. Hedge. Survive first, profit later."},
-];
+// Default overlays: recession score + S&P
+const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx:true,yc:false,cr:false,ic:false,sa:false,mf:false,co:false,li:false,vx:false,cape:false});
 
-let st={key:localStorage.getItem("rr9")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
- al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,autoRef:null,
- clfRaw:null,claims4wk:null,clfRatio:null,
- bt:{open:false,loading:false,loaded:false,data:null,err:null}};
+let st={key:localStorage.getItem("rr11")||null,d:{},mk:{},mkF:{},ss:{},ex:{},ld:false,err:null,upd:null,px:0,
+ al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,
+ bt:{open:false,loading:false,loaded:false,data:null,err:null,ov:defaultOv()}};
 
-async function ff(sid,key,lim=24,freq=""){
- let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;
- if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;
- const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
- for(const i of ord){
-  try{const r=await fetch(PX[i](base),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;
-   const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{continue}
-   if(j.observations){st.px=i;return j.observations.filter(o=>o.value!==".").reverse()}
-   if(j.contents){try{const p=JSON.parse(j.contents);if(p.observations){st.px=i;return p.observations.filter(o=>o.value!==".").reverse()}}catch{}}
-  }catch{continue}}
- throw new Error(sid);
-}
+async function ff(sid,key,lim=24,freq=""){let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;
+ if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
+ for(const i of ord){try{const r=await fetch(PX[i](base),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{continue}
+  if(j.observations){st.px=i;return j.observations.filter(o=>o.value!==".").reverse()}if(j.contents){try{const p=JSON.parse(j.contents);if(p.observations){st.px=i;return p.observations.filter(o=>o.value!==".").reverse()}}catch{}}}catch{continue}}throw new Error(sid)}
 
-async function fetchCAPE(){
- const urls=["https://www.multpl.com/shiller-pe","https://www.multpl.com/shiller-pe/table/by-month"];
- for(const url of urls){const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
-  for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;
-   const html=await r.text();
-   const pats=[/Current\s+Shiller\s+PE[^0-9]*([\d]{1,2}\.[\d]{1,2})/i,/<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<]*<\/td>\s*<td[^>]*>\s*([\d]+\.[\d]+)/i,/([\d]{2}\.[\d]{2})\s*<\/td>/];
-   for(const pat of pats){const m=html.match(pat);if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}}catch{continue}}}
- st.cape=null;
-}
+async function fetchCAPE(){const urls=["https://www.multpl.com/shiller-pe","https://www.multpl.com/shiller-pe/table/by-month"];
+ for(const url of urls){const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;const html=await r.text();
+  const pats=[/Current\s+Shiller\s+PE[^0-9]*([\d]{1,2}\.[\d]{1,2})/i,/<td[^>]*>(?:Apr|Mar|Feb|Jan|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[^<]*<\/td>\s*<td[^>]*>\s*([\d]+\.[\d]+)/i,/([\d]{2}\.[\d]{2})\s*<\/td>/];
+  for(const pat of pats){const m=html.match(pat);if(m&&m[1]){const v=parseFloat(m[1]);if(v>5&&v<100){st.cape=v;return}}}}catch{continue}}}st.cape=null}
 
-/* CAPE historical for backtest */
-async function fetchCAPEHistory(){
- try{
-  const url="https://www.multpl.com/shiller-pe/table/by-month";
-  const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
-  for(const i of ord){
-   try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;
-    const html=await r.text();
-    const rows=[];const re=/<tr[^>]*>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([\d.]+)<\/td>/gi;
-    let m;while((m=re.exec(html))!==null){
-     const dateStr=m[1].trim();const val=parseFloat(m[2]);
-     if(isNaN(val)||val<3)continue;
-     const d=new Date(dateStr);if(isNaN(d))continue;
-     const ym=d.toISOString().substring(0,7);
-     rows.push({month:ym,value:val})}
-    if(rows.length>12)return rows;
-   }catch{continue}}
- }catch{}
- return[];
-}
+async function fetchCAPEHist(){try{const url="https://www.multpl.com/shiller-pe/table/by-month";const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];
+ for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const html=await r.text();const rows=[];
+  const re=/<tr[^>]*>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([\d.]+)<\/td>/gi;let m;
+  while((m=re.exec(html))!==null){const d=new Date(m[1].trim());const v=parseFloat(m[2]);if(!isNaN(d)&&v>3)rows.push({month:d.toISOString().substring(0,7),value:v})}
+  if(rows.length>12)return rows}catch{continue}}}catch{}return[]}
 
-/* CLF ratio — fixed: CLF16OV is in thousands, ICSA is raw number.
-   User wants: raw ICSA / raw CLF16OV = claims per 1000 labor force members */
-async function fetchCLF(){
- try{
-  const clf=await ff("CLF16OV",st.key,3);
-  if(clf.length){
-   st.clfRaw=parseFloat(clf[clf.length-1].value); // e.g. 170087 (thousands)
-   const claims=st.d.ic||[];
-   if(claims.length>=4&&st.clfRaw){
-    const last4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
-    st.claims4wk=last4.reduce((a,b)=>a+b,0)/last4.length;
-    // Ratio = claims / CLF (both in FRED raw units) × 100 to get percentage
-    // e.g. 207750 / 170087 = 1.22 (per thousand), displayed as %
-    st.clfRatio=(st.claims4wk/st.clfRaw)*100; // ~0.12%
-    // Wait — user says 207750/170087 = 1.22%. Let me match their expectation.
-    // Actually the ratio IS 207750/170087 = 1.221. User calls this 1.22%.
-    // So just do claims/CLF_raw, no *100 needed, display as-is with % sign
-    st.clfRatio=st.claims4wk/st.clfRaw; // e.g. 1.22
-   }
-  }
- }catch{st.clfRaw=null;st.claims4wk=null;st.clfRatio=null}
-}
+async function fetchCLF(){try{const clf=await ff("CLF16OV",st.key,3);if(clf.length){st.clfRaw=parseFloat(clf[clf.length-1].value);const claims=st.d.ic||[];
+ if(claims.length>=4&&st.clfRaw){const last4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));st.claims4wk=last4.reduce((a,b)=>a+b,0)/last4.length;st.clfRatio=st.claims4wk/st.clfRaw}}}catch{}}
 
-function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};
- let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0)inv=true;else if(inv&&!ud)ud=d[i].date}
- return{ycUD:ud,ycInv:inv}}
-function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};
- let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}
- return{sahmD:td,sahmPk:pk}}
-function peakPct(d){if(!d||d.length<10)return null;const v=d.map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(v.length<10)return null;
- return(((v[v.length-1]-Math.max(...v))/Math.max(...v))*100).toFixed(1)}
+function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0)inv=true;else if(inv&&!ud)ud=d[i].date}return{ycUD:ud,ycInv:inv}}
+function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}return{sahmD:td,sahmPk:pk}}
+function peakPct(d){if(!d||d.length<10)return null;const v=d.map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(v.length<10)return null;return(((v[v.length-1]-Math.max(...v))/Math.max(...v))*100).toFixed(1)}
 
-async function loadAll(){
- st.ld=true;st.err=null;render();let ok=0,fl=[];
- for(const s of S){if(s.isCape)continue;
-  try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}
-  catch{st.d[s.k]=[];fl.push(s.n)}}
+function calcComposite(){const leading=[],confirming=[],market=[];
+ S.forEach(s=>{if(s.sc&&!s.isCape){const obs=st.d[s.k]||[];const lat=obs.length?parseFloat(obs[obs.length-1].value):null;const sc=s.sc(lat);if(sc!=null){if(s.tier==="leading")leading.push(sc);else if(s.tier==="confirming")confirming.push(sc);else market.push(sc)}}
+  if(s.isCape&&st.cape){const sc=s.sc(st.cape);if(sc!=null)market.push(sc)}});
+ if(st.clfRatio!=null)leading.push(clamp((st.clfRatio-0.8)/2.5*100));
+ const avgL=leading.length?leading.reduce((a,b)=>a+b,0)/leading.length:null;
+ const avgC=confirming.length?confirming.reduce((a,b)=>a+b,0)/confirming.length:null;
+ const avgM=market.length?market.reduce((a,b)=>a+b,0)/market.length:null;
+ let rec=null;if(avgL!=null&&avgC!=null)rec=avgL*.6+avgC*.4;else if(avgL!=null)rec=avgL;
+ return{recession:rec,leading:avgL,confirming:avgC,market:avgM}}
+
+async function loadAll(){st.ld=true;st.err=null;render();let ok=0,fl=[];
+ for(const s of S){if(s.isCape)continue;try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}catch{st.d[s.k]=[];fl.push(s.n)}}
  for(const m of MK){try{st.mkF[m.f]=await ff(m.f,st.key,m.pk?260:10);st.mk[m.f]=st.mkF[m.f].slice(-5)}catch{st.mk[m.f]=[];st.mkF[m.f]=[]}}
  await fetchCAPE();await fetchCLF();
- if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else{st.d.cape=[];fl.push("CAPE")}
- for(const s of S){const obs=st.d[s.k]||[];
-  if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}
+ if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else st.d.cape=[];
+ for(const s of S){const obs=st.d[s.k]||[];if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}
   if(s.tr){const v=obs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));st.ss[s.k]=s.ev(null,v.length>=2?v[v.length-1]-v[0]:null)}
   else{let l=obs.length?parseFloat(obs[obs.length-1].value):null;if(s.divK&&l)l=l/1000;st.ss[s.k]=s.ev(isNaN(l)?null:l)}}
  st.al={...analyzeYC(st.d.yc||[]),...analyzeSahm(st.d.sa||[])};st.upd=new Date();
- if(ok===0)st.err="No data. Check FRED API key: fred.stlouisfed.org/docs/api/api_key.html";
- else if(fl.length)st.err=`Loaded ${ok}/${S.length}. Missing: ${fl.join(", ")}`;
- st.ld=false;render()
-}
+ if(ok===0)st.err="No data. Check FRED key.";else if(fl.length)st.err=`Loaded ${ok}/${S.length}. Missing: ${fl.join(", ")}`;
+ st.ld=false;render()}
 
 /* ═══ BACKTEST ═══ */
-async function loadBacktest(){
- st.bt.loading=true;st.bt.err=null;render();
- try{
-  const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",li:"USSLIND",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC"};
-  const raw={};
-  for(const[k,id] of Object.entries(ids)){try{raw[k]=await ff(id,st.key,500,"m")}catch{raw[k]=[]}}
-  // Fetch CAPE history
-  const capeHist=await fetchCAPEHistory();
-  const capeIdx={};capeHist.forEach(c=>{capeIdx[c.month]=c.value});
+async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
+ try{const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",li:"USSLIND",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC",spx:"SP500"};
+  const raw={};for(const[k,id] of Object.entries(ids)){try{raw[k]=await ff(id,st.key,500,"m")}catch{raw[k]=[]}}
+  const cH=await fetchCAPEHist();const cI={};cH.forEach(c=>{cI[c.month]=c.value});
+  const allD=new Set();for(const obs of Object.values(raw))obs.forEach(o=>allD.add(o.date.substring(0,7)));Object.keys(cI).forEach(m=>allD.add(m));
+  const months=[...allD].sort();const idx={};for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
+  const comp=[];
+  for(const m of months){const lead=[],conf=[],mkt=[],indScores={};
+   if(idx.yc[m]!=null&&!isNaN(idx.yc[m])){const s=clamp((1.5-idx.yc[m])/2*100);lead.push(s);indScores.yc=s}
+   if(idx.cr[m]!=null&&!isNaN(idx.cr[m])){const s=clamp((idx.cr[m]-3)/7*100);lead.push(s);indScores.cr=s}
+   if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){const ratio=idx.ic[m]/idx.clf[m];const s=clamp((ratio-0.8)/2.5*100);lead.push(s);indScores.ic=s}
+   if(idx.sa[m]!=null&&!isNaN(idx.sa[m])){const s=clamp(idx.sa[m]/0.6*100);conf.push(s);indScores.sa=s}
+   const mfK=months.filter(x=>x<=m).slice(-4);
+   if(mfK.length>=4){const v0=idx.mf[mfK[0]],v3=idx.mf[mfK[3]];if(v0!=null&&v3!=null){const s=clamp((50-(v3-v0))/150*100);conf.push(s);indScores.mf=s}}
+   if(idx.co[m]!=null&&!isNaN(idx.co[m])){const s=clamp((95-idx.co[m])/45*100);conf.push(s);indScores.co=s}
+   if(idx.li[m]!=null&&!isNaN(idx.li[m])){const s=clamp((2-idx.li[m])/5*100);conf.push(s);indScores.li=s}
+   if(idx.vx[m]!=null&&!isNaN(idx.vx[m])){const s=clamp((idx.vx[m]-12)/28*100);mkt.push(s);indScores.vx=s}
+   if(cI[m]!=null){const s=clamp((cI[m]-15)/25*100);mkt.push(s);indScores.cape=s}
+   const aL=lead.length?lead.reduce((a,b)=>a+b,0)/lead.length:null;
+   const aC=conf.length?conf.reduce((a,b)=>a+b,0)/conf.length:null;
+   const aM=mkt.length?mkt.reduce((a,b)=>a+b,0)/mkt.length:null;
+   let rec=null;if(aL!=null&&aC!=null)rec=aL*.6+aC*.4;else if(aL!=null)rec=aL;
+   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,recession:idx.rec[m]===1,spx:idx.spx[m]||null,...indScores})}
+  st.bt.data=comp.filter(c=>c.score!=null);st.bt.loaded=true;
+ }catch(e){st.bt.err="Failed: "+e.message}st.bt.loading=false;render()}
 
-  const allDates=new Set();
-  for(const obs of Object.values(raw))obs.forEach(o=>allDates.add(o.date.substring(0,7)));
-  Object.keys(capeIdx).forEach(m=>allDates.add(m));
-  const months=[...allDates].sort();
-  const idx={};
-  for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
-
-  const composite=[];
-  for(const m of months){
-   const scores=[];
-   if(idx.yc[m]!=null&&!isNaN(idx.yc[m]))scores.push(clamp((1.5-idx.yc[m])/2*100));
-   if(idx.sa[m]!=null&&!isNaN(idx.sa[m]))scores.push(clamp(idx.sa[m]/0.6*100));
-   if(idx.cr[m]!=null&&!isNaN(idx.cr[m]))scores.push(clamp((idx.cr[m]-3)/7*100));
-   if(idx.li[m]!=null&&!isNaN(idx.li[m]))scores.push(clamp((2-idx.li[m])/5*100));
-   const mfKeys=months.filter(x=>x<=m).slice(-4);
-   if(mfKeys.length>=4){const v0=idx.mf[mfKeys[0]],v3=idx.mf[mfKeys[3]];
-    if(v0!=null&&v3!=null){scores.push(clamp((50-(v3-v0))/150*100))}}
-   if(idx.co[m]!=null&&!isNaN(idx.co[m]))scores.push(clamp((95-idx.co[m])/45*100));
-   if(idx.vx[m]!=null&&!isNaN(idx.vx[m]))scores.push(clamp((idx.vx[m]-12)/28*100));
-   // Claims/CLF ratio
-   if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){
-    const ratio=idx.ic[m]/idx.clf[m]; // raw units: claims / CLF(thousands)
-    scores.push(clamp((ratio-0.8)/2.5*100))}
-   // CAPE
-   if(capeIdx[m]!=null)scores.push(clamp((capeIdx[m]-15)/25*100));
-
-   const avg=scores.length>=3?scores.reduce((a,b)=>a+b,0)/scores.length:null;
-   composite.push({month:m,score:avg,recession:idx.rec[m]===1,count:scores.length});
-  }
-  st.bt.data=composite.filter(c=>c.score!=null);
-  st.bt.loaded=true;
- }catch(e){st.bt.err="Backtest failed: "+e.message}
- st.bt.loading=false;render();
-}
+/* ═══ CHART RENDERING ═══ */
+const CHART_PAD={t:20,b:35,l:36,r:20};
 
 function renderBTChart(){
- const data=st.bt.data;if(!data||data.length<12)return`<p class="m" style="font-size:11px;color:var(--t4)">Not enough data.</p>`;
- const W=Math.max(660,data.length*2.5),H=240,PAD={t:25,b:40,l:40,r:20};
- const cw=W-PAD.l-PAD.r,ch=H-PAD.t-PAD.b;
+ const data=st.bt.data;if(!data||data.length<12)return"";
+ const W=Math.max(700,data.length*3),H=250;
+ const{t:PT,b:PB,l:PL,r:PR}=CHART_PAD;
+ const cw=W-PL-PR,ch=H-PT-PB;
+ const ov=st.bt.ov;
 
- let recBands="",inRec=false,recStart=0;
- for(let i=0;i<data.length;i++){
-  const x=PAD.l+(i/(data.length-1))*cw;
-  if(data[i].recession&&!inRec){inRec=true;recStart=x}
-  if(!data[i].recession&&inRec){inRec=false;recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${x-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="1"/>`}}
- if(inRec)recBands+=`<rect x="${recStart}" y="${PAD.t}" width="${PAD.l+cw-recStart}" height="${ch}" fill="rgba(255,255,255,.06)" rx="1"/>`;
+ // Recession bands
+ let rec="",inR=false,rs=0;
+ for(let i=0;i<data.length;i++){const x=PL+(i/(data.length-1))*cw;
+  if(data[i].recession&&!inR){inR=true;rs=x}if(!data[i].recession&&inR){inR=false;rec+=`<rect x="${rs}" y="${PT}" width="${x-rs}" height="${ch}" fill="rgba(255,255,255,.06)"/>`}}
+ if(inR)rec+=`<rect x="${rs}" y="${PT}" width="${PL+cw-rs}" height="${ch}" fill="rgba(255,255,255,.06)"/>`;
 
- const zones=[{y0:0,y1:25,c:"rgba(0,230,118,.05)"},{y0:25,y1:50,c:"rgba(255,193,7,.04)"},{y0:50,y1:75,c:"rgba(255,145,0,.04)"},{y0:75,y1:100,c:"rgba(255,23,68,.05)"}];
- let zf="";for(const z of zones){const yt=PAD.t+(1-z.y1/100)*ch,yb=PAD.t+(1-z.y0/100)*ch;zf+=`<rect x="${PAD.l}" y="${yt}" width="${cw}" height="${yb-yt}" fill="${z.c}"/>`}
+ // Zones
+ const zones=[{y0:0,y1:25,c:"rgba(0,230,118,.03)"},{y0:25,y1:50,c:"rgba(255,193,7,.025)"},{y0:50,y1:75,c:"rgba(255,145,0,.025)"},{y0:75,y1:100,c:"rgba(255,23,68,.035)"}];
+ let zf="";for(const z of zones){zf+=`<rect x="${PL}" y="${PT+(1-z.y1/100)*ch}" width="${cw}" height="${(z.y1-z.y0)/100*ch}" fill="${z.c}"/>`}
 
- let grid="";
- for(const v of [0,25,50,75,100]){const y=PAD.t+(1-v/100)*ch;
-  grid+=`<line x1="${PAD.l}" y1="${y}" x2="${PAD.l+cw}" y2="${y}" stroke="rgba(255,255,255,.07)" stroke-width="0.5"/>`;
-  grid+=`<text x="${PAD.l-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${v}</text>`}
+ // Grid
+ let grid="";for(const v of [0,25,50,75,100]){const y=PT+(1-v/100)*ch;
+  grid+=`<line x1="${PL}" y1="${y}" x2="${PL+cw}" y2="${y}" stroke="rgba(255,255,255,.06)" stroke-width="0.5"/>`;
+  grid+=`<text x="${PL-4}" y="${y+3}" text-anchor="end" fill="#444" font-size="8" font-family="JetBrains Mono,monospace">${v}</text>`}
 
- let yl="",lastY="";
- for(let i=0;i<data.length;i++){const yr=data[i].month.substring(0,4);
-  if(yr!==lastY&&parseInt(yr)%2===0){const x=PAD.l+(i/(data.length-1))*cw;
-   yl+=`<text x="${x}" y="${H-8}" text-anchor="middle" fill="#555" font-size="9" font-family="JetBrains Mono,monospace">${yr}</text>`;
-   yl+=`<line x1="${x}" y1="${PAD.t}" x2="${x}" y2="${PAD.t+ch}" stroke="rgba(255,255,255,.03)" stroke-width="0.5"/>`;lastY=yr}}
+ // Year labels
+ let yl="",lastYr="";for(let i=0;i<data.length;i++){const yr=data[i].month.substring(0,4);
+  if(yr!==lastYr&&parseInt(yr)%3===0){const x=PL+(i/(data.length-1))*cw;
+   yl+=`<text x="${x}" y="${H-6}" text-anchor="middle" fill="#444" font-size="8" font-family="JetBrains Mono,monospace">'${yr.slice(2)}</text>`;lastYr=yr}}
 
- const pts=data.map((d,i)=>{const x=PAD.l+(i/(data.length-1))*cw;const y=PAD.t+(1-d.score/100)*ch;return`${x},${y}`}).join(" ");
- const areaPts=`${PAD.l},${PAD.t+ch} ${pts} ${PAD.l+cw},${PAD.t+ch}`;
- const last=data[data.length-1].score;
- const lc=last>75?"var(--st)":last>50?"var(--wn)":last>25?"var(--ca)":"var(--cl)";
- const lastY2=PAD.t+(1-last/100)*ch;
+ function mkLine(key,color,width=1.2,dash=""){
+  const pts=data.map((d,i)=>{const v=d[key];if(v==null)return null;return`${PL+(i/(data.length-1))*cw},${PT+(1-v/100)*ch}`}).filter(Boolean).join(" ");
+  return pts?`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" ${dash?`stroke-dasharray="${dash}"`:""}/>`:""}
 
- // Score label positioned above the chart area, not on the line
- const labelY=Math.max(PAD.t+4,lastY2-16);
+ // S&P 500 (normalized to chart height)
+ let spxLine="";
+ if(ov.spx){const vals=data.map(d=>d.spx).filter(v=>v!=null);
+  if(vals.length>10){const mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1;
+   const pts=data.map((d,i)=>{if(d.spx==null)return null;return`${PL+(i/(data.length-1))*cw},${PT+(1-(d.spx-mn)/rng)*ch}`}).filter(Boolean).join(" ");
+   spxLine=`<polyline points="${pts}" fill="none" stroke="#64B5F6" stroke-width="1" stroke-opacity=".5"/>`}}
 
- return`<div class="bt-chart" id="bt-chart-wrap" style="position:relative">
-  <svg id="bt-svg" width="${W}" height="${H}" style="display:block">
-   <defs><linearGradient id="btg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${lc}" stop-opacity=".15"/><stop offset="100%" stop-color="${lc}" stop-opacity="0"/></linearGradient></defs>
-   ${zf}${recBands}${grid}${yl}
-   <polygon points="${areaPts}" fill="url(#btg)"/>
-   <polyline points="${pts}" fill="none" stroke="${lc}" stroke-width="1.5" stroke-linejoin="round"/>
-   <circle cx="${PAD.l+cw}" cy="${lastY2}" r="4" fill="${lc}" stroke="var(--bg)" stroke-width="2"/>
-   <text x="${PAD.l+cw-8}" y="${labelY}" text-anchor="end" fill="${lc}" font-size="12" font-weight="700" font-family="JetBrains Mono,monospace">${last.toFixed(0)}</text>
-   <rect x="${PAD.l+6}" y="${PAD.t+4}" width="8" height="8" fill="rgba(255,255,255,.08)" rx="1"/>
-   <text x="${PAD.l+18}" y="${PAD.t+12}" fill="#555" font-size="8" font-family="JetBrains Mono,monospace">= NBER Recession</text>
-   <!-- Invisible overlay for mouse/touch interaction -->
-   <rect id="bt-overlay" x="${PAD.l}" y="${PAD.t}" width="${cw}" height="${ch}" fill="transparent" style="cursor:crosshair"/>
-  </svg>
-  <div id="bt-tip" class="bt-tooltip" style="opacity:0;top:0;left:0">
-   <div class="m" style="font-size:10px;font-weight:700;color:var(--tx)" id="bt-tip-score"></div>
-   <div class="m" style="font-size:9px;color:var(--t3)" id="bt-tip-date"></div>
-   <div class="m" style="font-size:8px;color:var(--t4)" id="bt-tip-rec"></div>
-  </div>
-  <div id="bt-crosshair" style="position:absolute;top:${PAD.t}px;width:1px;height:${ch}px;background:rgba(255,255,255,.15);pointer-events:none;opacity:0"></div>
- </div>`;
-}
+ // Individual indicator lines
+ let indLines="";
+ S.forEach(s=>{if(ov[s.k]){indLines+=mkLine(s.k,s.btColor,1,"3,2")}});
+
+ // Main composite line + area
+ const mainPts=data.map((d,i)=>`${PL+(i/(data.length-1))*cw},${PT+(1-(d.score||0)/100)*ch}`).join(" ");
+ const areaPts=`${PL},${PT+ch} ${mainPts} ${PL+cw},${PT+ch}`;
+ const last=data[data.length-1];const lsc=last.score;
+ const lc=lsc>75?"#FF1744":lsc>50?"#FF9100":lsc>25?"#FFC107":"#00E676";
+ const mainLine=ov.score?`<polygon points="${areaPts}" fill="${lc}" fill-opacity=".08"/>${mkLine("score",lc,2)}`:"";
+ const subLines=[ov.leading?mkLine("leading","#42A5F5",1.2,"4,2"):"",ov.confirming?mkLine("confirming","#AB47BC",1.2,"4,2"):"",ov.market?mkLine("market","#FFA726",1.2,"4,2"):""].join("");
+
+ // Current score endpoint
+ const lastX=PL+cw,lastY=PT+(1-lsc/100)*ch;
+ const endMark=ov.score?`<circle cx="${lastX}" cy="${lastY}" r="4" fill="${lc}" stroke="var(--bg)" stroke-width="2"/><text x="${lastX+8}" y="${lastY+4}" fill="${lc}" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${lsc.toFixed(0)}</text>`:"";
+
+ return`<div class="bt-scroll" id="bt-wrap"><svg id="bt-svg" width="${W}" height="${H}" style="display:block;touch-action:pan-x">${zf}${rec}${grid}${yl}${spxLine}${indLines}${mainLine}${subLines}${endMark}
+  <rect id="bt-hit" x="${PL}" y="${PT}" width="${cw}" height="${ch}" fill="transparent" style="cursor:crosshair"/></svg>
+  <div id="bt-cross" style="position:absolute;top:${PT}px;width:1px;height:${ch}px;background:rgba(255,255,255,.25);pointer-events:none;display:none"></div></div>`}
 
 function bindBTChart(){
- const wrap=document.getElementById("bt-chart-wrap");
- const svg=document.getElementById("bt-svg");
- const tip=document.getElementById("bt-tip");
- const cross=document.getElementById("bt-crosshair");
- if(!wrap||!svg||!tip||!cross||!st.bt.data)return;
+ const wrap=document.getElementById("bt-wrap");const svg=document.getElementById("bt-svg");
+ const tip=document.getElementById("bt-tip");const cross=document.getElementById("bt-cross");
+ if(!wrap||!svg||!tip||!st.bt.data)return;
+ const data=st.bt.data;const W=parseFloat(svg.getAttribute("width"));
+ const{t:PT,b:PB,l:PL,r:PR}=CHART_PAD;const cw=W-PL-PR,ch=250-PT-PB;
 
- const data=st.bt.data;
- const W=parseFloat(svg.getAttribute("width"));
- const H=parseFloat(svg.getAttribute("height"));
- const PAD={t:25,b:40,l:40,r:20};
- const cw=W-PAD.l-PAD.r,ch=H-PAD.t-PAD.b;
+ // Scroll to end (most recent)
+ requestAnimationFrame(()=>{wrap.scrollLeft=wrap.scrollWidth});
 
- function handleMove(clientX){
-  const rect=svg.getBoundingClientRect();
-  const scrollLeft=wrap.scrollLeft;
-  const svgX=(clientX-rect.left)+scrollLeft;
-  const dataX=svgX-PAD.l;
-  if(dataX<0||dataX>cw){tip.style.opacity="0";cross.style.opacity="0";return}
-  const idx=Math.round((dataX/cw)*(data.length-1));
-  const clamped=Math.max(0,Math.min(data.length-1,idx));
-  const d=data[clamped];
-  const sc=d.score.toFixed(1);
-  const col=d.score>75?"var(--st)":d.score>50?"var(--wn)":d.score>25?"var(--ca)":"var(--cl)";
+ function getIdx(clientX){
+  const wrapRect=wrap.getBoundingClientRect();
+  const svgX=(clientX-wrapRect.left)+wrap.scrollLeft;
+  const dataX=svgX-PL;
+  if(dataX<0||dataX>cw)return-1;
+  return Math.max(0,Math.min(data.length-1,Math.round((dataX/cw)*(data.length-1))))}
 
-  document.getElementById("bt-tip-score").textContent=`Score: ${sc}`;
-  document.getElementById("bt-tip-score").style.color=col;
-  document.getElementById("bt-tip-date").textContent=d.month;
-  document.getElementById("bt-tip-rec").textContent=d.recession?"RECESSION":"";
-  document.getElementById("bt-tip-rec").style.color="var(--st)";
+ function showTip(ci,clientX,clientY){
+  if(ci<0||ci>=data.length){tip.style.display="none";cross.style.display="none";return}
+  const d=data[ci];const col=d.score>75?"#FF1744":d.score>50?"#FF9100":d.score>25?"#FFC107":"#00E676";
 
-  const xPos=PAD.l+(clamped/(data.length-1))*cw;
-  const yPos=PAD.t+(1-d.score/100)*ch;
+  document.getElementById("tip-sc").textContent=`Score: ${d.score.toFixed(1)}`;
+  document.getElementById("tip-sc").style.color=col;
+  document.getElementById("tip-dt").textContent=d.month+(d.spx!=null?" · S&P: "+d.spx.toFixed(0):"");
 
-  tip.style.opacity="1";
-  tip.style.left=xPos+"px";
-  tip.style.top=(yPos-50)+"px";
-  cross.style.opacity="1";
-  cross.style.left=xPos+"px";
- }
+  // Sub-scores
+  const parts=[];
+  if(d.leading!=null)parts.push(`L:${d.leading.toFixed(0)}`);
+  if(d.confirming!=null)parts.push(`C:${d.confirming.toFixed(0)}`);
+  if(d.market!=null)parts.push(`M:${d.market.toFixed(0)}`);
+  document.getElementById("tip-sub").textContent=parts.join(" · ");
+  document.getElementById("tip-sub").style.color="#888";
 
- svg.addEventListener("mousemove",e=>handleMove(e.clientX));
- svg.addEventListener("touchmove",e=>{e.preventDefault();handleMove(e.touches[0].clientX)},{passive:false});
- svg.addEventListener("mouseleave",()=>{tip.style.opacity="0";cross.style.opacity="0"});
- svg.addEventListener("touchend",()=>{tip.style.opacity="0";cross.style.opacity="0"});
-}
+  document.getElementById("tip-rc").textContent=d.recession?"⬤ RECESSION":"";
+  document.getElementById("tip-rc").style.color="#FF1744";
 
-/* ── Sparkline ── */
+  // Position tooltip near cursor but keep on screen
+  let tx=clientX+14,ty=clientY-70;
+  tip.style.display="block";
+  tip.style.left=tx+"px";tip.style.top=ty+"px";
+  requestAnimationFrame(()=>{const r=tip.getBoundingClientRect();
+   if(r.right>window.innerWidth-8)tip.style.left=(clientX-r.width-14)+"px";
+   if(r.top<8)tip.style.top=(clientY+20)+"px"});
+
+  // Crosshair
+  const xPos=PL+(ci/(data.length-1))*cw-wrap.scrollLeft;
+  cross.style.display="block";cross.style.left=(xPos+PL-PL)+"px";
+  // Recalc to be relative to wrapper visible area
+  const wrapRect=wrap.getBoundingClientRect();
+  cross.style.left=((clientX-wrapRect.left))+"px"}
+
+ function hide(){tip.style.display="none";cross.style.display="none"}
+
+ svg.addEventListener("mousemove",e=>{const ci=getIdx(e.clientX);showTip(ci,e.clientX,e.clientY)});
+ svg.addEventListener("mouseleave",hide);
+
+ let touching=false;
+ wrap.addEventListener("touchstart",e=>{if(e.touches.length===1){touching=true;const t=e.touches[0];const ci=getIdx(t.clientX);showTip(ci,t.clientX,t.clientY)}},{passive:true});
+ wrap.addEventListener("touchmove",e=>{if(touching&&e.touches.length===1){const t=e.touches[0];const ci=getIdx(t.clientX);showTip(ci,t.clientX,t.clientY)}},{passive:true});
+ wrap.addEventListener("touchend",()=>{touching=false;hide()})}
+
+/* ── Helpers ── */
 function spark(d,c,w=180,h=42){if(!d||d.length<2)return"";const v=d.map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(v.length<2)return"";
- const mn=Math.min(...v),mx=Math.max(...v),r=mx-mn||1;const pts=v.map((val,i)=>`${(i/(v.length-1))*w},${h-((val-mn)/r)*(h-6)-3}`).join(" ");
- const ly=h-((v[v.length-1]-mn)/r)*(h-6)-3;
+ const mn=Math.min(...v),mx=Math.max(...v),r=mx-mn||1;const pts=v.map((val,i)=>`${(i/(v.length-1))*w},${h-((val-mn)/r)*(h-6)-3}`).join(" ");const ly=h-((v[v.length-1]-mn)/r)*(h-6)-3;
  return`<svg width="${w}" height="${h}" style="display:block;margin-top:6px;opacity:.75"><defs><linearGradient id="g${c.slice(1)}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${c}" stop-opacity=".2"/><stop offset="100%" stop-color="${c}" stop-opacity="0"/></linearGradient></defs><polygon points="0,${h} ${pts} ${w},${h}" fill="url(#g${c.slice(1)})"/><polyline points="${pts}" fill="none" stroke="${c}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${w}" cy="${ly}" r="2.5" fill="${c}"/></svg>`}
 function dot(s,sz=8){const c=(ST[s]||ST.unknown).c;return`<span class="dt" style="width:${sz}px;height:${sz}px;background:${c};box-shadow:0 0 ${sz+2}px ${c}40"></span>`}
 function fD(d){if(!d)return"?";return new Date(d+"T00:00:00").toLocaleDateString("en-US",{month:"short",year:"numeric"})}
 function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00:00:00"))/(1000*60*60*24*30.44))}
 
-/* ── RENDER ── */
+/* ═══ TOGGLE BUTTON HTML ═══ */
+function tgBtn(key,label,color){
+ const on=st.bt.ov[key];
+ return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
+
+/* ═══ MAIN RENDER ═══ */
 function render(){const a=document.getElementById("app");
  if(!st.key){a.innerHTML=setup();bindSetup();return}
- if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p><p class="m" style="font-size:10px;color:#444;margin-top:6px">9 indicators + CLF ratio + market context</p></div>`;return}
- a.innerHTML=`<div class="c">${hdr()}${st.err?`<div class="err-box"><p class="m" style="font-size:11px;color:var(--st);line-height:1.5;white-space:pre-line">${st.err}</p></div>`:""}${gauge()}${dynAlert()}${mktB()}<div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div><div style="display:flex;flex-direction:column;gap:10px">${S.map(s=>card(s)).join("")}</div>${backtestSection()}${leg()}</div>`;
+ if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching live data...</p></div>`;return}
+ a.innerHTML=`<div class="c">${hdr()}${st.err?`<div class="err-box"><p class="m" style="font-size:11px;color:var(--st);line-height:1.5;white-space:pre-line">${st.err}</p></div>`:""}${gauge()}${dynAlert()}${mktSignals()}${mktB()}
+  <div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div>
+  ${renderTier("leading")}${renderTier("confirming")}${renderTier("market")}${btSection()}${leg()}</div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
- if(st.bt.open&&st.bt.loaded)setTimeout(bindBTChart,50);
-}
+ if(st.bt.open&&st.bt.loaded)setTimeout(bindBTChart,120)}
 
 function setup(){return`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center">
  <h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1>
- <p class="m" style="font-size:9px;color:var(--t4);letter-spacing:.12em;margin-bottom:32px">LIVE INDICATOR DASHBOARD + BACKTEST</p>
+ <p class="m" style="font-size:9px;color:var(--t4);letter-spacing:.12em;margin-bottom:32px">TIERED INDICATOR SYSTEM</p>
  <div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left">
- <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">9 recession indicators · Live FRED data · CLF-normalized claims · Shiller CAPE · Composite backtest scoring.</p>
- <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block;text-decoration:underline">Get free FRED API key →</a>
- <div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;display:block;margin-bottom:6px">FRED API KEY</label>
+ <p style="font-size:13px;color:#888;line-height:1.7;margin-bottom:16px">9 indicators in 3 tiers — Leading, Confirming, Market — with live FRED data, composite backtest, and buy/sell signals.</p>
+ <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a>
+ <div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label>
  <input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div>
- <button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div>
- <p class="m" style="font-size:8px;color:var(--t5);margin-top:14px">Add to home screen for app-like access</p></div></div>`}
+ <button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`}
 function bindSetup(){setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;
  i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});
- const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr9",k);loadAll()}};
+ const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr11",k);loadAll()}};
  b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50)}
 
 function hdr(){const t=st.upd?st.upd.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):"";const arOn=!!st.autoRef;
  return`<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--bd);flex-wrap:wrap;gap:8px">
  <div><h1 class="h" style="font-size:20px;font-weight:800;letter-spacing:-.03em">📡 RECESSION RADAR</h1>
- <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px;letter-spacing:.1em">LIVE · ${t} · 9 INDICATORS</p></div>
- <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+ <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px;letter-spacing:.1em">LIVE · ${t}</p></div>
+ <div style="display:flex;gap:6px;align-items:center">
  <button onclick="toggleAR()" class="m ar-badge" style="background:${arOn?"rgba(0,230,118,.12)":"rgba(85,85,85,.1)"};border:1px solid ${arOn?"rgba(0,230,118,.3)":"#333"};color:${arOn?"var(--cl)":"var(--t4)"};cursor:pointer">${arOn?"⏱ AUTO":"⏱ OFF"}</button>
  <button onclick="loadAll()" class="m" style="padding:5px 12px;background:#1E1D1A;border:1px solid #2A2825;border-radius:6px;color:#AAA;font-size:10px;cursor:pointer">⟳</button>
  <button onclick="rst()" class="m" style="padding:5px 8px;background:transparent;border:1px solid #222;border-radius:6px;color:var(--t5);font-size:10px;cursor:pointer">✕</button></div></div>`}
 
-function gauge(){const ss=S.map(s=>st.ss[s.k]||"unknown");
+function gauge(){const comp=calcComposite();const ss=S.map(s=>st.ss[s.k]||"unknown");
  const sv=ss.filter(s=>s==="stress"||s==="warning").length,ca=ss.filter(s=>s==="caution").length,wa=ss.filter(s=>s==="watch").length,al=sv+ca;
  let lv=LV[0];for(const o of LV)if(al<=o.x){lv=o;break}if(al>=6)lv=LV[3];
- // Composite score — includes CAPE
- const scores=[];
- S.forEach(s=>{
-  if(s.sc&&!s.isCape){const obs=st.d[s.k]||[];const lat=obs.length?parseFloat(obs[obs.length-1].value):null;const sc=s.sc(lat);if(sc!=null)scores.push(sc)}
-  if(s.isCape&&st.cape){const sc=s.sc(st.cape);if(sc!=null)scores.push(sc)}});
- if(st.clfRatio!=null)scores.push(clamp((st.clfRatio-0.8)/2.5*100));
- const compScore=scores.length>=3?scores.reduce((a,b)=>a+b,0)/scores.length:null;
  return`<div class="ga" style="border:1px solid ${lv.c}22"><div class="gb"></div>
  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
  <div><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.14em;margin-bottom:6px">RECESSION RISK</div>
  <div style="display:flex;align-items:center;gap:12px"><span class="h" style="font-size:32px;font-weight:800;color:${lv.c};line-height:1">${lv.l}</span><span style="font-size:13px;color:var(--t3);border-left:1px solid #2A2825;padding-left:12px">${lv.s}</span></div></div>
- <div style="display:flex;gap:14px">
- ${compScore!=null?`<div style="text-align:center"><div class="m" style="font-size:20px;font-weight:800;color:${compScore>75?"var(--st)":compScore>50?"var(--wn)":compScore>25?"var(--ca)":"var(--cl)"}">${compScore.toFixed(0)}</div><div class="m" style="font-size:8px;color:var(--t4)">Score</div></div>`:""}
- ${[{n:sv,l:"Alerts",c:"var(--st)"},{n:ca,l:"Cautions",c:"var(--ca)"},{n:wa,l:"Watch",c:"var(--wa)"}].map(x=>`<div style="text-align:center"><div class="m" style="font-size:20px;font-weight:800;color:${x.c}">${x.n}</div><div class="m" style="font-size:8px;color:var(--t4)">${x.l}</div></div>`).join("")}
+ <div style="display:flex;gap:12px;flex-wrap:wrap">
+ ${comp.recession!=null?`<div style="text-align:center"><div class="m" style="font-size:20px;font-weight:800;color:${comp.recession>75?"var(--st)":comp.recession>50?"var(--wn)":comp.recession>25?"var(--ca)":"var(--cl)"}">${comp.recession.toFixed(0)}</div><div class="m" style="font-size:7px;color:var(--t4)">RECESSION</div></div>`:""}
+ ${comp.leading!=null?`<div style="text-align:center"><div class="m" style="font-size:16px;font-weight:700;color:#42A5F5">${comp.leading.toFixed(0)}</div><div class="m" style="font-size:7px;color:var(--t4)">LEADING</div></div>`:""}
+ ${comp.confirming!=null?`<div style="text-align:center"><div class="m" style="font-size:16px;font-weight:700;color:#AB47BC">${comp.confirming.toFixed(0)}</div><div class="m" style="font-size:7px;color:var(--t4)">CONFIRM</div></div>`:""}
  </div></div>
  <div style="margin-top:14px;padding:10px 12px;background:${lv.c}0C;border-radius:8px;border:1px solid ${lv.c}15">
  <span class="m" style="font-size:9px;color:${lv.c};letter-spacing:.06em">STRATEGY</span>
- <p style="font-size:12px;color:var(--t2);margin-top:4px;line-height:1.6">${lv.st}</p></div></div>`}
+ <p style="font-size:12px;color:var(--t2);margin-top:4px;line-height:1.5">${lv.st}</p></div>
+ <p class="m" style="font-size:8px;color:var(--t5);margin-top:8px">Recession = 60% Leading + 40% Confirming. Market tier separate.</p></div>`}
+
+function mktSignals(){const comp=calcComposite();if(comp.market==null)return"";
+ const vD=st.d.vx||[];const vix=vD.length?parseFloat(vD[vD.length-1].value):null;
+ let buy=false,sell=false;
+ if(vix!=null&&vix>40)buy=true;if(st.cape!=null&&st.cape<18)buy=true;
+ if(vix!=null&&vix>30&&!buy)sell=true;if(st.cape!=null&&st.cape>35)sell=true;
+ return`<div class="mkt-sig">
+  <div class="mkt-sig-card" style="background:${buy?"rgba(0,230,118,.08)":"rgba(85,85,85,.04)"};border:1px solid ${buy?"rgba(0,230,118,.25)":"var(--bd)"}">
+   <div class="m" style="font-size:9px;color:${buy?"var(--cl)":"var(--t4)"};margin-bottom:4px">BUY SIGNAL</div>
+   <div style="font-size:13px;color:${buy?"var(--cl)":"var(--t4)"}">${buy?"<strong>ACTIVE</strong>":"Inactive"}</div>
+   <div class="m" style="font-size:8px;color:var(--t5);margin-top:3px">VIX > 40 or CAPE < 18</div></div>
+  <div class="mkt-sig-card" style="background:${sell?"rgba(255,23,68,.08)":"rgba(85,85,85,.04)"};border:1px solid ${sell?"rgba(255,23,68,.25)":"var(--bd)"}">
+   <div class="m" style="font-size:9px;color:${sell?"var(--st)":"var(--t4)"};margin-bottom:4px">SELL / REDUCE</div>
+   <div style="font-size:13px;color:${sell?"var(--st)":"var(--t4)"}">${sell?"<strong>ACTIVE</strong>":"Inactive"}</div>
+   <div class="m" style="font-size:8px;color:var(--t5);margin-top:3px">VIX > 30 or CAPE > 35</div></div></div>`}
 
 function dynAlert(){const ad=st.al;const sahmD=st.d.sa||[],ycD=st.d.yc||[];
  const sv=sahmD.length?parseFloat(sahmD[sahmD.length-1].value):null;const yv=ycD.length?parseFloat(ycD[ycD.length-1].value):null;
@@ -452,32 +405,28 @@ function dynAlert(){const ad=st.al;const sahmD=st.d.sa||[],ycD=st.d.yc||[];
  if(both){bdr="rgba(255,145,0,.2)";bgc="rgba(255,145,0,.05)";ic="var(--wn)";ttl="⚡ DUAL INDICATOR ALERT"}
  else if(either){bdr="rgba(255,193,7,.2)";bgc="rgba(255,193,7,.05)";ic="var(--ca)";ttl="PATTERN ALERT"}
  let ms=[];
- if(ad.ycInv&&ad.ycUD){const mo=mAgo(ad.ycUD),rem=mo!=null?18-mo:null,inW=rem!=null&&rem>0;
-  ms.push(`<strong style="color:var(--ca)">Yield curve un-inverted ${fD(ad.ycUD)}</strong> (${mo} mo ago). ${inW?`Within recession window (${rem} mo left).`:"18-mo window passed."} Current: ${yv!=null?yv.toFixed(2)+"%":"N/A"}.`)}
+ if(ad.ycInv&&ad.ycUD){const mo=mAgo(ad.ycUD),rem=mo!=null?18-mo:null;
+  ms.push(`<strong style="color:var(--ca)">Yield curve un-inverted ${fD(ad.ycUD)}</strong> (${mo} mo). ${rem!=null&&rem>0?`Window: ${rem} mo left.`:"Window passed."}`)}
  else if(yv!=null&&yv<0)ms.push(`<strong style="color:var(--st)">Yield curve inverted</strong> at ${yv.toFixed(2)}%.`);
- else ms.push(`Yield curve positive at ${yv!=null?yv.toFixed(2)+"%":"N/A"}.`);
- if(ad.sahmD)ms.push(`<strong style="color:var(--ca)">Sahm Rule triggered ${fD(ad.sahmD)}</strong> (peak: ${ad.sahmPk!=null?ad.sahmPk.toFixed(2):"?"}). Current: ${sv!=null?sv.toFixed(2):"N/A"}. ${sv!=null&&sv<.5?"Retreated.":"Active."}`);
- else ms.push(`Sahm Rule at ${sv!=null?sv.toFixed(2):"N/A"} — ${sv!=null&&sv>=.3?"approaching":"below"} 0.50.`);
- if(st.cape)ms.push(`CAPE at <strong style="color:${st.cape>30?"var(--wn)":"var(--t2)"}">${st.cape.toFixed(1)}x</strong> (median 16). ${st.cape>30?"Elevated valuations amplify downside.":""}`);
- if(st.clfRatio!=null)ms.push(`Claims/CLF ratio: <strong style="color:${st.clfRatio>2.0?"var(--wn)":"var(--t2)"}">${st.clfRatio.toFixed(2)}%</strong> (4-wk MA: ${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"} / CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":"-"}). ${st.clfRatio>2.0?"Elevated.":"Within normal range."}`);
- if(both)ms.push(`<span style="color:var(--wn)">Both yield curve and Sahm Rule fired — preceded every recession since 1970.</span>`);
- return`<div class="ab" style="background:${bgc};border:1px solid ${bdr}">
- <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap"><span style="font-size:13px">⚠</span>
- <span class="m" style="font-size:10px;font-weight:700;color:${ic};letter-spacing:.08em">${ttl}</span>
- <span class="m" style="font-size:8px;color:var(--t5);margin-left:auto">LIVE</span></div>
- ${ms.map(m=>`<p style="font-size:12px;color:#999;line-height:1.7;margin-bottom:6px">${m}</p>`).join("")}</div>`}
+ if(ad.sahmD)ms.push(`<strong style="color:var(--ca)">Sahm triggered ${fD(ad.sahmD)}</strong>. Now: ${sv!=null?sv.toFixed(2):"?"}. ${sv!=null&&sv<.5?"Retreated.":"Active."}`);
+ if(st.clfRatio!=null)ms.push(`Claims/CLF: <strong>${st.clfRatio.toFixed(2)}</strong> (4wk: ${st.claims4wk?Math.round(st.claims4wk).toLocaleString():""} / CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":""})`);
+ if(both)ms.push(`<span style="color:var(--wn)">Both fired — preceded every recession since 1970.</span>`);
+ return`<div class="ab" style="background:${bgc};border:1px solid ${bdr}"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="font-size:13px">⚠</span><span class="m" style="font-size:10px;font-weight:700;color:${ic};letter-spacing:.08em">${ttl}</span></div>
+ ${ms.map(m=>`<p style="font-size:12px;color:#999;line-height:1.6;margin-bottom:4px">${m}</p>`).join("")}</div>`}
 
-function mktB(){return`<div class="mg">${MK.map(m=>{
- const d=st.mk[m.f],full=st.mkF[m.f];const v=d?.length?parseFloat(d[d.length-1].value):null;
- const p=d?.length>1?parseFloat(d[d.length-2].value):null;
- const ch=v&&p?((v-p)/p*100).toFixed(2):null;const up=ch?parseFloat(ch)>=0:true;
- let pp=null,ppC="var(--t4)";
+function mktB(){return`<div class="mg">${MK.map(m=>{const d=st.mk[m.f],full=st.mkF[m.f];const v=d?.length?parseFloat(d[d.length-1].value):null;const p=d?.length>1?parseFloat(d[d.length-2].value):null;
+ const ch=v&&p?((v-p)/p*100).toFixed(2):null;const up=ch?parseFloat(ch)>=0:true;let pp=null,ppC="var(--t4)";
  if(m.pk&&full?.length>10){pp=peakPct(full);if(pp!=null){const pv=parseFloat(pp);ppC=pv<=-15?"var(--st)":pv<=-10?"var(--wn)":pv<=-5?"var(--ca)":"var(--cl)"}}
- return`<div class="mc"><div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.08em">${m.n}</div>
- <div class="m" style="font-size:14px;font-weight:700;margin-top:3px">${v!=null?`${m.p||""}${v.toFixed(m.d)}${m.x||""}`:"—"}</div>
+ return`<div class="mc"><div class="m" style="font-size:8px;color:var(--t4)">${m.n}</div><div class="m" style="font-size:14px;font-weight:700;margin-top:3px">${v!=null?`${m.p||""}${v.toFixed(m.d)}${m.x||""}`:"—"}</div>
  ${ch?`<div class="m" style="font-size:9px;color:${up?"var(--cl)":"var(--st)"};margin-top:2px">${up?"▲":"▼"} ${Math.abs(parseFloat(ch))}%</div>`:""}
- ${pp!=null?`<div class="m" style="font-size:8px;color:${ppC};margin-top:1px">${parseFloat(pp)>=0?"At peak":pp+"% from peak"}</div>`:""}
- </div>`}).join("")}</div>`}
+ ${pp!=null?`<div class="m" style="font-size:8px;color:${ppC};margin-top:1px">${parseFloat(pp)>=0?"At peak":pp+"% from peak"}</div>`:""}</div>`}).join("")}</div>`}
+
+function renderTier(tier){const t=TIERS[tier];const items=S.filter(s=>s.tier===tier);
+ return`<div style="margin-bottom:8px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+ <div style="width:3px;height:14px;border-radius:2px;background:${t.color}"></div>
+ <span class="m" style="font-size:10px;font-weight:700;color:${t.color};letter-spacing:.08em">${t.label}</span>
+ <span class="m" style="font-size:9px;color:var(--t4)">${t.desc}</span></div>
+ <div style="display:flex;flex-direction:column;gap:10px">${items.map(s=>card(s)).join("")}</div></div>`}
 
 function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[status]||ST.unknown;
  const show=d.slice(-24);const lat=d.length?d[d.length-1]:null;const val=lat?parseFloat(lat.value):null;const op=st.ex[s.k];
@@ -486,73 +435,70 @@ function card(s){const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[statu
  else if(s.tr&&d.length>=3){const r=d.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(r.length>=2){const c=((r[r.length-1]-r[0])/1000).toFixed(0);disp=`${c>0?"+":""}${c}K`}}
  else if(s.divK&&val!=null&&!isNaN(val))disp=(val/1000).toFixed(0);
  else if(val!=null&&!isNaN(val))disp=val.toFixed(2);
- // CLF ratio sub-panel
- if(s.hasCLF&&st.clfRatio!=null){
-  const rc=st.clfRatio>2.0?"var(--st)":st.clfRatio>1.6?"var(--wn)":st.clfRatio>1.3?"var(--ca)":"var(--cl)";
+ if(s.hasCLF&&st.clfRatio!=null){const rc=st.clfRatio>2.0?"var(--st)":st.clfRatio>1.6?"var(--wn)":st.clfRatio>1.3?"var(--ca)":"var(--cl)";
   sub=`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.25);border-radius:6px">
-   <div style="display:flex;justify-content:space-between;align-items:center">
-    <div><div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.08em">CLAIMS / CLF RATIO</div>
-    <div class="m" style="font-size:18px;font-weight:800;color:${rc};margin-top:2px">${st.clfRatio.toFixed(2)}%</div></div>
-    <div style="text-align:right"><div class="m" style="font-size:8px;color:var(--t4)">4-WK MA</div>
-    <div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}</div>
-    <div class="m" style="font-size:8px;color:var(--t4);margin-top:2px">CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":"-"}</div></div>
-   </div>
-   <div class="m" style="font-size:8px;color:var(--t4);margin-top:6px">< 1.3 Healthy | 1.3–1.6 Normal | 1.6–2.0 Elevated | > 2.0 Warning</div>
-   <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px"><a href="https://fred.stlouisfed.org/series/CLF16OV" target="_blank">CLF16OV on FRED →</a></div>
-  </div>`}
+   <div style="display:flex;justify-content:space-between"><div><div class="m" style="font-size:8px;color:var(--t4)">CLAIMS / CLF</div>
+   <div class="m" style="font-size:18px;font-weight:800;color:${rc};margin-top:2px">${st.clfRatio.toFixed(2)}</div></div>
+   <div style="text-align:right"><div class="m" style="font-size:8px;color:var(--t4)">4-WK MA</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}</div>
+   <div class="m" style="font-size:8px;color:var(--t4)">CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":"-"}</div></div></div>
+   <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px"><a href="https://fred.stlouisfed.org/series/CLF16OV" target="_blank">CLF16OV →</a> · <a href="https://fred.stlouisfed.org/series/ICSA" target="_blank">ICSA →</a></div></div>`}
  let hcomp="";
- if(op&&(s.pre08!=null||s.pre20!=null)){
-  hcomp=`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:6px">PRE-RECESSION LEVELS</div><div class="hcomp">
-  ${s.pre01!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">Pre-2001</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre01}</div></div>`:""}
-  ${s.pre08!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">Pre-2008</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre08}</div></div>`:""}
-  ${s.pre20!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">Pre-2020</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre20}</div></div>`:""}
+ if(op&&(s.pre08!=null||s.pre20!=null)){hcomp=`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">PRE-RECESSION</div><div class="hcomp">
+  ${s.pre01!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2001</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre01}</div></div>`:""}
+  ${s.pre08!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2008</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre08}</div></div>`:""}
+  ${s.pre20!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2020</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre20}</div></div>`:""}
   </div></div>`}
  return`<div class="card" data-ck="${s.k}" style="background:${cfg.bg};border:1px solid ${cfg.b}">
  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
  <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">${dot(status)}<span class="m" style="font-size:10px;font-weight:700;letter-spacing:.1em;color:${cfg.c}">${cfg.l}</span></div>
- <h3 class="h" style="font-size:17px;font-weight:700;margin-bottom:2px">${s.n}</h3>
- <p class="m" style="font-size:10px;color:#666">${s.s}</p></div>
- <div style="text-align:right;flex-shrink:0"><div class="m" style="font-size:26px;font-weight:800;color:${cfg.c};line-height:1.1">${disp}<span style="font-size:11px;opacity:.5">${s.u}</span></div>
+ <h3 class="h" style="font-size:17px;font-weight:700;margin-bottom:2px">${s.n}</h3><p class="m" style="font-size:10px;color:#666">${s.s}</p></div>
+ <div style="text-align:right"><div class="m" style="font-size:26px;font-weight:800;color:${cfg.c};line-height:1.1">${disp}<span style="font-size:11px;opacity:.5">${s.u}</span></div>
  <div class="m" style="font-size:9px;color:var(--t4);margin-top:4px">${lat?.date||""}</div></div></div>
  ${s.isCape?"":spark(show,cfg.c)}${sub}
- ${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}">
- <div class="desc">${s.desc}</div>
- <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div>
- <div class="db"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>
- ${hcomp}
- <p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`Source: <a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">FRED →</a>`}</p></div>`:""}
- <div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲ collapse":"▼ details"}</div></div>`}
+ ${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}"><div class="desc">${s.desc}</div>
+ <div class="db"><div class="m" style="font-size:9px;color:var(--t4)">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div>
+ <div class="db"><div class="m" style="font-size:9px;color:var(--t4)">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>
+ ${hcomp}<p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`<a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">FRED →</a>`}</p></div>`:""}
+ <div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲":"▼"}</div></div>`}
 
-function backtestSection(){
- return`<div class="bt-wrap">
-  <div class="bt-hdr" onclick="toggleBT()">
-   <div><div class="h" style="font-size:15px;font-weight:700">📊 Composite Backtest</div>
-   <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Score 0–100 vs NBER recessions · Hover/touch for values</p></div>
-   <span class="m" style="font-size:12px;color:var(--t4)">${st.bt.open?"▲":"▼"}</span>
-  </div>
-  ${st.bt.open?`<div class="bt-body">
-   ${st.bt.loading?`<div style="text-align:center;padding:30px 0"><div class="lp" style="font-size:24px">📊</div><p class="m" style="font-size:11px;color:#666;margin-top:10px">Loading ~30 years of monthly data + CAPE history...</p><p class="m" style="font-size:9px;color:#444;margin-top:4px">This may take 30-60 seconds</p></div>`:
-    st.bt.err?`<p class="m" style="font-size:11px;color:var(--st)">${st.bt.err}</p>`:
-    st.bt.loaded?`
-     ${renderBTChart()}
-     <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap">
-      ${[{r:"0–25",l:"GREEN",c:"var(--cl)"},{r:"25–50",l:"YELLOW",c:"var(--ca)"},{r:"50–75",l:"ORANGE",c:"var(--wn)"},{r:"75–100",l:"RED",c:"var(--st)"}].map(z=>
-       `<div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:${z.c};opacity:.4"></div><span class="m" style="font-size:9px;color:var(--t4)">${z.r} ${z.l}</span></div>`).join("")}
-      <div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.15)"></div><span class="m" style="font-size:9px;color:var(--t4)">NBER Recession</span></div>
+function btSection(){const ov=st.bt.ov;
+ return`<div class="bt-wrap"><div class="bt-hdr" onclick="toggleBT()"><div><div class="h" style="font-size:15px;font-weight:700">📊 Composite Backtest</div>
+  <p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Score 0–100 vs NBER recessions · hover for values</p></div>
+  <span class="m" style="font-size:12px;color:var(--t4)">${st.bt.open?"▲":"▼"}</span></div>
+ ${st.bt.open?`<div class="bt-body">
+  ${st.bt.loading?`<div style="text-align:center;padding:30px 0"><div class="lp" style="font-size:24px">📊</div><p class="m" style="font-size:11px;color:#666;margin-top:10px">Loading ~30 years + CAPE history...</p></div>`:
+   st.bt.err?`<p class="m" style="color:var(--st)">${st.bt.err}</p>`:
+   st.bt.loaded?`
+    <div style="margin-bottom:10px">
+     <div class="m" style="font-size:8px;color:var(--t4);margin-bottom:6px">OVERLAYS</div>
+     <div style="display:flex;gap:5px;flex-wrap:wrap">
+      ${tgBtn("score","Recession Score","#FFC107")}
+      ${tgBtn("spx","S&P 500","#64B5F6")}
+      ${tgBtn("leading","Leading","#42A5F5")}
+      ${tgBtn("confirming","Confirming","#AB47BC")}
+      ${tgBtn("market","Market","#FFA726")}
      </div>
-     <p class="m" style="font-size:8px;color:var(--t5);margin-top:10px;line-height:1.5">Composite = average of 9 sub-scores (YC, Sahm, Credit, LEI, Mfg, Sentiment, VIX, Claims/CLF, CAPE). Each normalized 0–100. USREC = NBER official recession dates. Hover or drag to see score at any point.</p>
-    `:`<button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.06em">LOAD HISTORICAL BACKTEST</button>
-     <p class="m" style="font-size:9px;color:var(--t5);margin-top:8px;text-align:center">Fetches ~30 years of data for all indicators + NBER recession dates + CAPE history</p>`}
-  </div>`:""}</div>`}
+     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">
+      ${S.map(s=>tgBtn(s.k,s.n,s.btColor)).join("")}
+     </div>
+    </div>
+    ${renderBTChart()}
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+     <div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.08)"></div><span class="m" style="font-size:8px;color:var(--t4)">NBER Recession</span></div>
+    </div>
+    <p class="m" style="font-size:8px;color:var(--t5);margin-top:8px;line-height:1.5">Recession = 60% Leading + 40% Confirming. CAPE included. Scroll chart · hover/touch for date & score.</p>
+   `:`<button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer">LOAD HISTORICAL BACKTEST</button>`}
+ </div>`:""}</div>`}
 
-function leg(){return`<div class="lg"><div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">STATUS LEGEND</div>
- <div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px">${Object.entries(ST).filter(([k])=>k!=="unknown").map(([k,v])=>`<div style="display:flex;align-items:center;gap:5px">${dot(k,7)}<span class="m" style="font-size:10px;color:${v.c}">${v.l}</span></div>`).join("")}</div>
- <p class="m" style="font-size:8px;color:var(--t5);line-height:1.6">Live from FRED + multpl.com. ISM proxied via Mfg Employment. DXY = Trade Weighted USD Broad. CAPE = Shiller P/E 10. Claims/CLF = 4-wk MA ÷ Civilian Labor Force.<br>
- <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</p></div>`}
+function leg(){return`<div class="lg"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:10px">TIERS</div>
+ <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:12px">${Object.entries(TIERS).map(([k,t])=>`<div style="display:flex;align-items:center;gap:8px"><div style="width:3px;height:12px;border-radius:2px;background:${t.color}"></div><span class="m" style="font-size:9px;color:${t.color}">${t.label}</span><span class="m" style="font-size:9px;color:var(--t4)">${t.desc}</span></div>`).join("")}</div>
+ <div style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-bottom:10px">${Object.entries(ST).filter(([k])=>k!=="unknown").map(([k,v])=>`<div style="display:flex;align-items:center;gap:5px">${dot(k,7)}<span class="m" style="font-size:10px;color:${v.c}">${v.l}</span></div>`).join("")}</div>
+ <p class="m" style="font-size:8px;color:var(--t5);line-height:1.5">Live from FRED + multpl.com. Not financial advice. <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a></p></div>`}
 
 function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}else{st.autoRef=setInterval(()=>loadAll(),4*60*60*1000)}render()}
 function toggleBT(){st.bt.open=!st.bt.open;render()}
-function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};st.bt={open:false,loading:false,loaded:false,data:null,err:null};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr9");render()}
+function togOv(k){st.bt.ov[k]=!st.bt.ov[k];render()}
+function rst(){st.key=null;st.d={};st.mk={};st.mkF={};st.ss={};st.ex={};st.bt={open:false,loading:false,loaded:false,data:null,err:null,ov:defaultOv()};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr11");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
