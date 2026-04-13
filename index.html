@@ -92,30 +92,50 @@ function sentSignal(v){if(v==null)return{score:0,note:""};if(v<55)return{score:-
 function epuSignal(v){if(v==null)return{score:0,note:""};const z=((v-110)/50).toFixed(1);if(v>300)return{score:3,note:`EPU ${v.toFixed(0)} (${z}σ) — Crisis`};if(v>200)return{score:2,note:`EPU ${v.toFixed(0)} (${z}σ) — Major`};if(v>150)return{score:1,note:`EPU ${v.toFixed(0)} (${z}σ) — Elevated`};return{score:0,note:`EPU ${v.toFixed(0)} (${z}σ) — Normal`}}
 
 function calcMomentum(){
- const spxData=st.mcFull.sp500||[];if(spxData.length<10)return{abvMA:null,ma:null,mom3:null,current:null};
- const vals=spxData.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));if(vals.length<10)return{abvMA:null,ma:null,mom3:null,current:null};
+ const spxData=st.mcFull.sp500||[];if(spxData.length<10)return{abvMA:null,ma:null,mom3:null,current:null,bearRegime:false,drawdown:null,high12:null};
+ const vals=spxData.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));if(vals.length<10)return{abvMA:null,ma:null,mom3:null,current:null,bearRegime:false,drawdown:null,high12:null};
  const current=vals[vals.length-1];
  const ma10=vals.slice(-10).reduce((a,b)=>a+b,0)/Math.min(vals.length,10);
  const prev3=vals.length>=3?vals[vals.length-3]:current;
  const mom3=((current-prev3)/prev3)*100;
- return{abvMA:current>ma10,ma:ma10.toFixed(0),mom3:mom3.toFixed(1),current:current.toFixed(0)}}
+ const abvMA=current>ma10;
+ /* Bear regime: below 10mo MA AND >7% drawdown from 12-month high */
+ const high12=Math.max(...vals.slice(-Math.min(vals.length,252)));
+ const drawdown=((current-high12)/high12)*100;
+ const bearRegime=!abvMA&&drawdown<-7;
+ return{abvMA,ma:ma10.toFixed(0),mom3:mom3.toFixed(1),current:current.toFixed(0),bearRegime,drawdown:drawdown.toFixed(1),high12:high12.toFixed(0)}}
 
 function calcMarketSignal(){const vD=st.d.vx||[],coD=st.d.co||[],epuD=st.d.epu||[];
  const vix=vD.length?parseFloat(vD[vD.length-1].value):null;const sent=coD.length?parseFloat(coD[coD.length-1].value):null;const epu=epuD.length?parseFloat(epuD[epuD.length-1].value):null;
  const vZ=st.vixRolling?parseFloat(st.vixRolling.z):null;
  const mom=calcMomentum();st.momentum=mom;
- const vS=vixSignalHybrid(vix,vZ,mom.abvMA),cS=capeSignal(st.cape),sS=sentSignal(sent),eS=epuSignal(epu);
+ const vS=vixSignalHybrid(vix,vZ,mom.abvMA),cS=capeSignal(st.cape),eS=epuSignal(epu);
+ /* Bear regime: dampen sentiment's contrarian buy signal.
+    In 2022 Sent=50-67 pulled BUY (-1 to -3) while market fell 25%.
+    Consumer pessimism during confirmed downtrend isn't contrarian — it's correct.
+    Dampen: halve sentiment's buy score (negative values) in bear regime. */
+ let sS=sentSignal(sent);
+ let bearDamp=null;
+ if(mom.bearRegime&&sS.score<0){
+  const origScore=sS.score;
+  const dampedScore=Math.round(sS.score*0.5);
+  bearDamp={orig:origScore,damped:dampedScore,drawdown:mom.drawdown};
+  sS={...sS,score:dampedScore,note:sS.note+` [dampened: bear regime ${mom.drawdown}%]`}}
  const w=[];
  if(vS.note)w.push({sig:vS,w:.40,name:"VIX",canOvr:true});
  if(cS.note)w.push({sig:cS,w:.25,name:"CAPE",canOvr:false});
  if(sS.note)w.push({sig:sS,w:.35,name:"Sentiment",canOvr:true});
  const tW=w.reduce((a,b)=>a+b.w,0);let bs=tW>0?w.reduce((a,b)=>a+b.w*b.sig.score,0)/tW:0;
+ /* Bear regime tilt: add +0.3 (toward sell) when in confirmed downtrend.
+    This is small enough not to overpower capitulation buys (VIX>40 = -2 or -3)
+    but shifts HOLD → SOFT SELL in grinding bears like 2022. */
+ if(mom.bearRegime)bs+=0.3;
  let ov=null;const ext=w.filter(x=>Math.abs(x.sig.score)===3&&x.canOvr);
  if(ext.length){const sb=ext.filter(x=>x.sig.score===-3),ss=ext.filter(x=>x.sig.score===3);
   if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX & Sentiment extremes conflict."};
   else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+' capitulation'};bs=Math.min(bs,-2.5)}
   else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+' extreme'};bs=Math.max(bs,2.5)}}
- return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS,epu:eS}}}
+ return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS,epu:eS},bearRegime:mom.bearRegime,bearDamp}}
 
 function getStrategy(){const comp=calcComposite();const ms=calcMarketSignal();const r=comp.recession!=null?comp.recession:0;const m=ms.score;
  /* v15.1: thresholds 35/60/80 */
@@ -266,12 +286,24 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
    let sentSig=0;
    if(idx.co[m]!=null){const sv=idx.co[m];if(sv<55)sentSig=-3;else if(sv<60)sentSig=-2;else if(sv<65)sentSig=-1;else if(sv<95)sentSig=0;else if(sv<100)sentSig=1;else if(sv<105)sentSig=2;else sentSig=3;indS.co=clamp((95-sv)/45*100)}
    if(idx.epu&&idx.epu[m]!=null)indS.epu=clamp(((idx.epu[m]-110)/50)/2*100);
+   /* Bear regime detection for backtest */
+   let btBear=false;
+   if(idx.spx[m]!=null&&spxMA[m]!=null){
+    const abvMA=idx.spx[m]>spxMA[m];
+    const prev12=spxMos.filter(x=>x<=m).slice(-12).map(x=>idx.spx[x]).filter(v=>v!=null);
+    const high12=prev12.length?Math.max(...prev12):idx.spx[m];
+    const dd=((idx.spx[m]-high12)/high12)*100;
+    btBear=!abvMA&&dd<-7;
+    /* Dampen sentiment contrarian buy in bear regime */
+    if(btBear&&sentSig<0)sentSig=Math.round(sentSig*0.5)}
    /* Composite market signal (-3 to +3) */
    const mktW=[];
    if(idx.vx[m]!=null)mktW.push({w:.40,s:vxSig});
    if(cI[m]!=null)mktW.push({w:.25,s:capeSig});
    if(idx.co[m]!=null)mktW.push({w:.35,s:sentSig});
    const mWT=mktW.reduce((a,b)=>a+b.w,0);let mktScore=mWT>0?mktW.reduce((a,b)=>a+b.w*b.s,0)/mWT:null;
+   /* Bear regime tilt: +0.3 toward sell */
+   if(btBear&&mktScore!=null)mktScore+=0.3;
    /* Override logic */
    if(mktScore!=null){const ext=mktW.filter(x=>Math.abs(x.s)===3);
     const sb=ext.filter(x=>x.s===-3),ss=ext.filter(x=>x.s===3);
@@ -282,7 +314,7 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
    const mktP=[];if(indS.vx!=null)mktP.push({w:.40,s:indS.vx});if(indS.cape!=null)mktP.push({w:.25,s:indS.cape});if(indS.co!=null)mktP.push({w:.35,s:indS.co});
    const mT=mktP.reduce((a,b)=>a+b.w,0);const aM=mT>0?mktP.reduce((a,b)=>a+b.w*b.s,0)/mT:null;
    let rec=null;if(aL!=null&&aC!=null)rec=aL*.75+aC*.25;else if(aL!=null)rec=aL;
-   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,recession:idx.rec[m]===1,spx:idx.spx[m]||null,...indS})}
+   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,recession:idx.rec[m]===1,spx:idx.spx[m]||null,bearRegime:btBear,...indS})}
   const data=comp.filter(c=>c.score!=null);
   st.bt.data=data;
   /* === COMPREHENSIVE BACKTEST STATS === */
@@ -368,17 +400,71 @@ function calcBacktestStats(data){
    rets.push((fwd.spx-d.spx)/d.spx*100)}
   stats.zoneReturns[z.name]={n:rets.length,avg:rets.length?(rets.reduce((a,b)=>a+b,0)/rets.length).toFixed(1):"-",
    win:rets.length?(rets.filter(r=>r>0).length/rets.length*100).toFixed(0):"-"}});
+ /* 6. BEAR REGIME ANALYSIS — validate the slow bear fix */
+ const bearMo=data.filter(d=>d.bearRegime);const normalMo=data.filter(d=>!d.bearRegime&&d.mktSignal!=null);
+ const bearRets6=[],normalRets6=[];
+ for(let i=0;i<data.length-6;i++){
+  const d=data[i];if(d.spx==null)continue;const fwd=data[i+6];if(!fwd||fwd.spx==null)continue;
+  const ret=(fwd.spx-d.spx)/d.spx*100;
+  if(d.bearRegime)bearRets6.push(ret);else normalRets6.push(ret)}
+ const bearSellMo=bearMo.filter(d=>d.mktSignal!=null&&d.mktSignal>=0.5);
+ const bearHoldMo=bearMo.filter(d=>d.mktSignal!=null&&d.mktSignal>-0.5&&d.mktSignal<0.5);
+ const bearBuyMo=bearMo.filter(d=>d.mktSignal!=null&&d.mktSignal<=-0.5);
+ const avg6=arr=>arr.length?(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1):"-";
+ stats.bearRegime={
+  totalMonths:bearMo.length,normalMonths:normalMo.length,
+  bearAvg6:avg6(bearRets6),normalAvg6:avg6(normalRets6),
+  bearSells:bearSellMo.length,bearHolds:bearHoldMo.length,bearBuys:bearBuyMo.length,
+  periods:[]};
+ /* Find bear regime periods */
+ let inBear=false,bStart=0;
+ for(let i=0;i<data.length;i++){if(data[i].bearRegime&&!inBear){inBear=true;bStart=i}
+  if(!data[i].bearRegime&&inBear){inBear=false;
+   const startSpx=data[bStart].spx,endSpx=data[i-1].spx;
+   const drawdown=startSpx&&endSpx?((Math.min(...data.slice(bStart,i).map(d=>d.spx).filter(Boolean))-startSpx)/startSpx*100).toFixed(1):"-";
+   stats.bearRegime.periods.push({start:data[bStart].month,end:data[i-1].month,months:i-bStart,drawdown,
+    signals:{sell:data.slice(bStart,i).filter(d=>d.mktSignal>=0.5).length,hold:data.slice(bStart,i).filter(d=>d.mktSignal>-0.5&&d.mktSignal<0.5).length,buy:data.slice(bStart,i).filter(d=>d.mktSignal<=-0.5).length}})}}
+ if(inBear){const startSpx=data[bStart].spx;
+  stats.bearRegime.periods.push({start:data[bStart].month,end:data[data.length-1].month,months:data.length-bStart,drawdown:"-",
+   signals:{sell:data.slice(bStart).filter(d=>d.mktSignal>=0.5).length,hold:data.slice(bStart).filter(d=>d.mktSignal>-0.5&&d.mktSignal<0.5).length,buy:data.slice(bStart).filter(d=>d.mktSignal<=-0.5).length}})}
  return stats}
 
-/* CSV file loading for S&P backfill */
-function loadCSVFile(file){return new Promise((resolve)=>{const reader=new FileReader();reader.onload=e=>{const lines=e.target.result.split("\n");const rows=[];
- for(let i=1;i<lines.length;i++){const cols=lines[i].split(",");if(cols.length<2)continue;const date=cols[0].trim();const val=parseFloat(cols[1]);
-  if(!date||isNaN(val))continue;const m=date.substring(0,7);rows.push({month:m,value:val})}
- resolve(rows)};reader.readAsText(file)})}
-function handleCSVUpload(files){if(!files||!files.length)return;const all=[];
- Promise.all([...files].map(f=>loadCSVFile(f))).then(results=>{results.forEach(r=>all.push(...r));
+/* CSV file loading for S&P backfill — handles FRED, Yahoo, Shiller, and generic formats */
+function loadCSVFile(file){return new Promise((resolve)=>{const reader=new FileReader();reader.onload=e=>{
+ const lines=e.target.result.split("\n");const rows=[];if(lines.length<2){resolve([]);return}
+ const hdr=lines[0].toLowerCase().replace(/"/g,"");
+ /* Detect format from header */
+ let dateCol=0,valCol=1,fmt="generic";
+ if(hdr.includes("observation_date")){/* FRED: observation_date,SP500 */
+  fmt="fred";dateCol=0;valCol=1}
+ else if(hdr.includes("high")&&hdr.includes("low")&&hdr.includes("close")){/* Yahoo: Date,High,Low,Open,Close,Vol,AdjClose */
+  fmt="yahoo";dateCol=0;const cols=hdr.split(",");valCol=cols.indexOf("close");if(valCol<0)valCol=4}
+ else if(hdr.includes("dividend")&&hdr.includes("earnings")){/* Shiller: Date,SP500,Dividend,Earnings,CPI... */
+  fmt="shiller";dateCol=0;valCol=1}
+ else if(hdr.includes("open")&&hdr.includes("close")){/* Generic OHLC: Date,Open,High,Low,Close */
+  fmt="ohlc";dateCol=0;const cols=hdr.split(",");valCol=cols.indexOf("close");if(valCol<0)valCol=4}
+ for(let i=1;i<lines.length;i++){
+  const line=lines[i].replace(/"/g,"").trim();if(!line)continue;
+  const cols=line.split(",");if(cols.length<=Math.max(dateCol,valCol))continue;
+  let date=cols[dateCol].trim();
+  /* Handle MM/DD/YYYY format */
+  if(/^\d{2}\/\d{2}\/\d{4}$/.test(date)){const p=date.split("/");date=`${p[2]}-${p[0]}-${p[1]}`}
+  /* Parse value — remove commas from numbers like "6,839.24" */
+  let raw=cols[valCol].trim().replace(/,/g,"");
+  const val=parseFloat(raw);
+  if(!date||isNaN(val)||val<=0)continue;
+  /* Extract month — handle both YYYY-MM-DD and YYYY-MM formats */
+  const m=date.substring(0,7);if(!/^\d{4}-\d{2}$/.test(m))continue;
+  rows.push({month:m,value:val,date})}
+ /* For daily data, keep last value per month (end-of-month close) */
+ const byMonth={};rows.forEach(r=>{if(!byMonth[r.month]||r.date>byMonth[r.month].date)byMonth[r.month]={value:r.value,date:r.date}});
+ resolve(Object.entries(byMonth).map(([month,d])=>({month,value:d.value})))
+};reader.readAsText(file)})}
+function handleCSVUpload(files){if(!files||!files.length)return;
+ Promise.all([...files].map(f=>loadCSVFile(f))).then(results=>{
+  const all=[];results.forEach(r=>all.push(...r));
   /* Deduplicate: keep latest value per month */
-  const byMonth={};all.forEach(r=>{byMonth[r.month]=r.value});
+  const byMonth={};all.forEach(r=>{if(!byMonth[r.month]||r.value>0)byMonth[r.month]=r.value});
   st.bt.csvData=Object.entries(byMonth).map(([month,value])=>({month,value})).sort((a,b)=>a.month.localeCompare(b.month));
   st.bt.csvLoaded=true;render()})}
 
@@ -433,7 +519,7 @@ function render(){const a=document.getElementById("app");
   <div class="msp-ind">
    ${[{n:"VIX",sig:ms.signals.vix,w:"40%",inC:true},{n:"CAPE",sig:ms.signals.cape,w:"25%",inC:true},{n:"Sentiment",sig:ms.signals.sentiment,w:"35%",inC:true},{n:"EPU",sig:ms.signals.epu,w:"REF",inC:false}].map(item=>{const sl=sigLevel(item.sig.score);return`<div class="msp-ind-card" style="border-color:${sl.color}30;${!item.inC?"opacity:.5":""}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">${item.n} <span style="color:var(--t5)">${item.w}</span></span><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">${item.sig.note}${item.sig.mom===false?' <span style="color:var(--wn)">⚠ below 10mo MA</span>':item.sig.mom===true?' <span style="color:var(--cl)">✓ above 10mo MA</span>':""}${!item.inC?' <span style="color:var(--t5)">(display only)</span>':""}</div></div>`}).join("")}
   </div>
-  ${mom.abvMA!=null?`<div style="margin-top:10px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div class="m" style="font-size:8px;color:var(--t4);margin-bottom:4px">MOMENTUM GATE</div><div style="display:flex;gap:12px;flex-wrap:wrap"><div class="m" style="font-size:10px;color:${mom.abvMA?"var(--cl)":"var(--st)"}">S&P ${mom.current} ${mom.abvMA?"above":"below"} 10mo MA (${mom.ma})</div><div class="m" style="font-size:10px;font-weight:700;color:${mom.abvMA?"var(--cl)":"var(--st)"}">Gate: ${mom.abvMA?"OPEN ✓":"CLOSED ✗"}</div></div></div>`:""}</div>
+  ${mom.abvMA!=null?`<div style="margin-top:10px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div class="m" style="font-size:8px;color:var(--t4);margin-bottom:4px">MOMENTUM GATE + BEAR REGIME</div><div style="display:flex;gap:12px;flex-wrap:wrap"><div class="m" style="font-size:10px;color:${mom.abvMA?"var(--cl)":"var(--st)"}">S&P ${mom.current} ${mom.abvMA?"above":"below"} 10mo MA (${mom.ma})</div><div class="m" style="font-size:10px;font-weight:700;color:${mom.abvMA?"var(--cl)":"var(--st)"}">Gate: ${mom.abvMA?"OPEN ✓":"CLOSED ✗"}</div></div>${mom.drawdown!=null?`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px"><div class="m" style="font-size:10px;color:var(--t3)">Drawdown: <span style="color:${parseFloat(mom.drawdown)<-15?"var(--st)":parseFloat(mom.drawdown)<-7?"var(--wn)":parseFloat(mom.drawdown)<-3?"var(--ca)":"var(--cl)"}">${mom.drawdown}%</span> from 12mo high (${mom.high12})</div><div class="m" style="font-size:10px;font-weight:700;color:${mom.bearRegime?"var(--st)":"var(--cl)"}">${mom.bearRegime?"BEAR REGIME ⚠":"Normal"}</div></div>`:""} ${mom.bearRegime&&ms.bearDamp?`<div style="margin-top:6px;padding:6px 8px;background:rgba(255,23,68,.08);border-radius:4px;border:1px solid rgba(255,23,68,.15)"><div class="m" style="font-size:9px;color:var(--st);font-weight:700">Sentiment dampened: ${ms.bearDamp.orig} → ${ms.bearDamp.damped} · Bearish tilt +0.3</div><div class="m" style="font-size:8px;color:var(--t4);margin-top:2px">Consumer pessimism during downtrend isn't contrarian — it's correct</div></div>`:""}</div>`:""}</div>
  ${(()=>{
   /* AAII Investor Sentiment + Market Breadth panel */
   const aa=st.aaii,br=st.breadth;
@@ -534,6 +620,24 @@ function render(){const a=document.getElementById("app");
    <div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">RECENT SIGNAL CHANGES</div>
    <div class="db" style="max-height:200px;overflow-y:auto"><table style="width:100%;font-size:10px;border-collapse:collapse">
     ${s.signalHistory.map(sh=>{const c=sh.score<=-2?"var(--cl)":sh.score<=-0.5?"#66BB6A":sh.score>=2?"var(--st)":sh.score>=0.5?"var(--wn)":"var(--t3)";return`<tr><td class="m" style="padding:3px 6px;color:var(--t3)">${sh.month}</td><td class="m" style="padding:3px 6px;color:${c};font-weight:700">${sh.level}</td><td class="m" style="padding:3px 6px;color:var(--t4)">${sh.duration||1}mo</td><td class="m" style="padding:3px 6px;color:var(--t5)">${sh.spx!=null?"S&P "+sh.spx.toLocaleString(undefined,{maximumFractionDigits:0}):""}</td></tr>`}).join("")}</table></div>
+   ${s.bearRegime?`<div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">BEAR REGIME ANALYSIS (Slow Bear Fix)</div>
+   <div class="db" style="margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+     <div style="background:rgba(255,23,68,.06);border-radius:6px;padding:8px;text-align:center"><div class="m" style="font-size:8px;color:var(--t4)">BEAR MONTHS</div><div class="m" style="font-size:18px;font-weight:800;color:var(--st)">${s.bearRegime.totalMonths}</div></div>
+     <div style="background:rgba(0,0,0,.15);border-radius:6px;padding:8px;text-align:center"><div class="m" style="font-size:8px;color:var(--t4)">BEAR AVG 6mo</div><div class="m" style="font-size:18px;font-weight:800;color:var(--st)">${s.bearRegime.bearAvg6}%</div></div>
+     <div style="background:rgba(0,0,0,.15);border-radius:6px;padding:8px;text-align:center"><div class="m" style="font-size:8px;color:var(--t4)">NORMAL AVG 6mo</div><div class="m" style="font-size:18px;font-weight:800;color:var(--cl)">${s.bearRegime.normalAvg6}%</div></div>
+    </div>
+    <div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">SIGNALS DURING BEAR REGIME</div>
+    <div style="display:flex;gap:12px;margin-bottom:8px">
+     <div class="m" style="font-size:10px">Sell: <span style="color:var(--cl);font-weight:700">${s.bearRegime.bearSells}</span></div>
+     <div class="m" style="font-size:10px">Hold: <span style="color:var(--ca);font-weight:700">${s.bearRegime.bearHolds}</span></div>
+     <div class="m" style="font-size:10px">Buy: <span style="color:var(--st);font-weight:700">${s.bearRegime.bearBuys}</span> ${s.bearRegime.bearBuys>0?'<span style="color:var(--t5)">(false buys blocked by regime)</span>':""}</div>
+    </div>
+    <div class="m" style="font-size:8px;color:var(--t5)">Bear regime = below 10mo MA + &gt;7% drawdown. Dampens sentiment contrarian buy, adds +0.3 sell tilt. Goal: fewer false HOLDs during grinding bears.</div>
+   </div>
+   ${s.bearRegime.periods.length?`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">BEAR REGIME PERIODS</div>
+    <table style="width:100%;font-size:10px;border-collapse:collapse"><tr><th style="text-align:left;padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">PERIOD</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">MO</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">DRAW</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SELL</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">HOLD</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">BUY</th></tr>
+    ${s.bearRegime.periods.map(p=>`<tr><td class="m" style="padding:3px 6px;color:var(--t2)">${p.start} → ${p.end}</td><td class="m" style="padding:3px 6px;text-align:center">${p.months}</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--st)">${p.drawdown}%</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--cl)">${p.signals.sell}</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--ca)">${p.signals.hold}</td><td class="m" style="padding:3px 6px;text-align:center;color:${p.signals.buy>0?"var(--st)":"var(--t4)"}">${p.signals.buy}</td></tr>`).join("")}</table></div>`:""}`:""}
   </div>`})()}
  `:`<div style="margin-bottom:10px"><button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer">LOAD BACKTEST</button></div>
   <div style="padding:10px 14px;background:rgba(0,0,0,.15);border-radius:8px;border:1px solid var(--bd)">
