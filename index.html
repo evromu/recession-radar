@@ -149,7 +149,7 @@ const ST={clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:
 const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx:true,yc:false,cr:false,ic:false,sa:false,mf:false,vx:false,cape:false,co:false,epu:false});
 
 let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},ld:false,err:null,upd:null,px:0,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
- bt:{open:false,loading:false,loaded:false,data:null,err:null,ov:defaultOv(),window:"max"}};
+ bt:{open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false}};
 
 async function ff(sid,key,lim=24,freq=""){let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](base),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{continue}if(j.observations){st.px=i;return j.observations.filter(o=>o.value!==".").reverse()}if(j.contents){try{const p=JSON.parse(j.contents);if(p.observations){st.px=i;return p.observations.filter(o=>o.value!==".").reverse()}}catch{}}}catch{continue}}throw new Error(sid)}
 async function fetchCAPE(){
@@ -180,15 +180,24 @@ async function fetchAAII(){
   for(const p of np){const m=h.match(p);if(m){neut=parseFloat(m[1]);if(neut>0&&neut<100)break;neut=null}}
   if(bull!=null&&bear!=null){st.aaii={bull,bear,neutral:neut,spread:(bull-bear).toFixed(1)};return}
  }catch{continue}}}st.aaii=null}
-async function fetchBreadth(){
- const urls=["https://www.marketinout.com/chart/market.php?breadth=above-sma-200"];
- for(const url of urls){const ord=[st.px,...[0,1,2].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;const h=await r.text();
-  /* Try parsing percentage of stocks above 200MA */
-  const pats=[/S&amp;P\s*500[^0-9]*([\d]{1,3}(?:\.[\d]+)?)\s*%/i,/above\s+(?:200|SMA\s*200)[^0-9]*([\d]{1,3}(?:\.[\d]+)?)\s*%/i,/([\d]{1,2}(?:\.[\d]+)?)\s*%\s*(?:of|are)\s*(?:stocks?|components?)/i,/class="[^"]*breadth[^"]*"[^>]*>([\d]{1,3}(?:\.[\d]+)?)\s*%/i];
-  for(const p of pats){const m=h.match(p);if(m){const v=parseFloat(m[1]);if(v>=0&&v<=100){st.breadth={pct:v,source:"MarketInOut"};return}}}
- }catch{continue}}}
- /* Fallback: estimate from S&P data if available */
- st.breadth=null}
+function calcBreadthProxy(){
+ /* S&P 500 vs 200-day MA proxy — uses daily FRED SP500 data we already fetch */
+ const spx=st.mcFull.sp500||[];if(spx.length<200){st.breadth=null;return}
+ const vals=spx.map(d=>({date:d.date,v:parseFloat(d.value)})).filter(x=>!isNaN(x.v));
+ if(vals.length<200){st.breadth=null;return}
+ const cur=vals[vals.length-1].v;
+ const ma200=vals.slice(-200).reduce((a,b)=>a+b.v,0)/Math.min(vals.length,200);
+ const ma50=vals.slice(-50).reduce((a,b)=>a+b.v,0)/Math.min(vals.length,50);
+ const high52=Math.max(...vals.slice(-252).map(d=>d.v));
+ const pctFromHigh=((cur-high52)/high52*100);
+ const abv200=cur>ma200;const abv50=cur>ma50;
+ /* Composite health score: above MA200 (40%), above MA50 (30%), distance from 52wk high (30%) */
+ let health=0;
+ if(abv200)health+=40;
+ if(abv50)health+=30;
+ /* 52wk high component: at high=30, -10%=15, -20%=0 */
+ health+=Math.max(0,Math.min(30,30+pctFromHigh*1.5));
+ st.breadth={pct:Math.round(health),source:"S&P Proxy",abv200,abv50,ma200:ma200.toFixed(0),ma50:ma50.toFixed(0),cur:cur.toFixed(0),fromHigh:pctFromHigh.toFixed(1)}}
 function calcVixRolling(){const vd=st.d.vx||[];const vals=vd.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));if(vals.length<60)return;const mean=vals.reduce((a,b)=>a+b,0)/vals.length;const sd=Math.sqrt(vals.map(v=>(v-mean)**2).reduce((a,b)=>a+b,0)/vals.length);st.vixRolling={mean:mean.toFixed(1),sd:sd.toFixed(1),z:((vals[vals.length-1]-mean)/sd).toFixed(2)}}
 function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0)inv=true;else if(inv&&!ud)ud=d[i].date}return{ycUD:ud,ycInv:inv}}
 function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}return{sahmD:td,sahmPk:pk}}
@@ -209,18 +218,23 @@ function calcComposite(){const ycObs=st.d.yc||[];const ycLat=ycObs.length?parseF
 
 async function loadAll(){st.ld=true;st.err=null;render();let ok=0,fl=[];
  for(const s of S){if(s.isCape)continue;try{const lim=s.k==="yc"?500:s.k==="sa"?60:s.k==="ic"?52:s.k==="vx"?500:s.k==="epu"?30:24;st.d[s.k]=await ff(s.f,st.key,lim);ok++}catch{st.d[s.k]=[];fl.push(s.n)}}
- for(const g of MC_GROUPS){for(const item of g.items){try{const lim=item.pk?260:item.isYoY?26:12;const data=await ff(item.f,st.key,lim);st.mcFull[item.id]=data;st.mc[item.id]=data.slice(-5)}catch{st.mc[item.id]=[];st.mcFull[item.id]=[]}}}
- await fetchCAPE();await fetchCLF();calcVixRolling();
- await Promise.allSettled([fetchAAII(),fetchBreadth()]);
+ for(const g of MC_GROUPS){for(const item of g.items){try{const lim=item.pk?500:item.isYoY?26:12;const data=await ff(item.f,st.key,lim);st.mcFull[item.id]=data;st.mc[item.id]=data.slice(-5)}catch{st.mc[item.id]=[];st.mcFull[item.id]=[]}}}
+ await fetchCAPE();await fetchCLF();calcVixRolling();calcBreadthProxy();
+ await Promise.allSettled([fetchAAII()]);
  if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else st.d.cape=[];
  for(const s of S){const obs=st.d[s.k]||[];if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}if(s.tr){const v=obs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));st.ss[s.k]=s.ev(null,v.length>=2?v[v.length-1]-v[0]:null)}else{let l=obs.length?parseFloat(obs[obs.length-1].value):null;if(s.divK&&l)l=l/1000;st.ss[s.k]=s.ev(isNaN(l)?null:l)}}
  st.al={...analyzeYC(st.d.yc||[]),...analyzeSahm(st.d.sa||[])};st.upd=new Date();
  if(ok===0)st.err="No data. Check key.";else if(fl.length)st.err=`Missing: ${fl.join(", ")}`;st.ld=false;render()}
 
-/* BACKTEST — v15.1: YC 0.5/-0.3, MA10 momentum gate */
+/* BACKTEST — v16: S&P 500 (FRED + CSV backfill), comprehensive stats */
 async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
- try{const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC",spx:"WILL5000INDFC",epu:"USEPUINDXM"};
+ try{const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC",spx:"SP500",epu:"USEPUINDXM"};
   const raw={};for(const[k,id] of Object.entries(ids)){try{raw[k]=await ff(id,st.key,k==="spx"?2000:500,"m")}catch{raw[k]=[]}}
+  /* CSV backfill: if SP500_base.csv or SP500.csv loaded via file input, merge */
+  if(st.bt.csvData&&st.bt.csvData.length){const csvIdx={};st.bt.csvData.forEach(r=>{if(!csvIdx[r.month])csvIdx[r.month]=r.value});
+   const fredIdx={};raw.spx.forEach(o=>{fredIdx[o.date.substring(0,7)]=true});
+   const backfill=[];for(const[m,v] of Object.entries(csvIdx)){if(!fredIdx[m])backfill.push({date:m+"-01",value:v.toString()})}
+   raw.spx=[...backfill,...raw.spx].sort((a,b)=>a.date.localeCompare(b.date))}
   const cH=await fetchCAPEHist();const cI={};cH.forEach(c=>{cI[c.month]=c.value});
   const allD=new Set();for(const obs of Object.values(raw))obs.forEach(o=>allD.add(o.date.substring(0,7)));Object.keys(cI).forEach(m=>allD.add(m));
   const months=[...allD].sort();const idx={};for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
@@ -239,20 +253,134 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
    const conf=[];if(idx.sa[m]!=null&&!isNaN(idx.sa[m])){const s=clamp(idx.sa[m]/0.6*100);conf.push({w:.60,s});indS.sa=s}
    const mfK=months.filter(x=>x<=m).slice(-4);if(mfK.length>=4){const v0=idx.mf[mfK[0]],v3=idx.mf[mfK[3]];if(v0!=null&&v3!=null){const s=clamp((50-(v3-v0))/150*100);conf.push({w:.40,s});indS.mf=s}}
    const cT=conf.reduce((a,b)=>a+b.w,0);const aC=cT>0?conf.reduce((a,b)=>a+b.w*b.s,0)/cT:null;
+   /* Market signal scoring */
+   let vxSig=0;
    if(idx.vx[m]!=null){const v=idx.vx[m],z=vixZbt[m];
     const abvMA=idx.spx[m]!=null&&spxMA[m]!=null&&idx.spx[m]>spxMA[m];
-    let vs=0;if(v>50)vs=-3;else if(v>40)vs=-2;else if(v>35)vs=-1;else if(v<12)vs=3;
-    else if(z!=null&&z>1.0){vs=abvMA?(z>2?-2:-1):0}
-    else if(z!=null){if(z>-0.5)vs=0;else if(z>-1)vs=1;else if(z>-1.5)vs=2;else vs=3}
-    indS.vx=50+vs*16.67}
-   if(cI[m]!=null){const cv=cI[m];indS.cape=cv<25?0:cv<30?clamp((cv-25)/5*33):cv<35?clamp(33+(cv-30)/5*34):100}
-   if(idx.co[m]!=null)indS.co=clamp((95-idx.co[m])/45*100);
+    if(v>50)vxSig=-3;else if(v>40)vxSig=-2;else if(v>35)vxSig=-1;else if(v<12)vxSig=3;
+    else if(z!=null&&z>1.0){vxSig=abvMA?(z>2?-2:-1):0}
+    else if(z!=null){if(z>-0.5)vxSig=0;else if(z>-1)vxSig=1;else if(z>-1.5)vxSig=2;else vxSig=3}
+    indS.vx=50+vxSig*16.67}
+   let capeSig=0;
+   if(cI[m]!=null){const cv=cI[m];if(cv<12)capeSig=-3;else if(cv<15)capeSig=-2;else if(cv<20)capeSig=-1;else if(cv<25)capeSig=0;else if(cv<30)capeSig=1;else if(cv<35)capeSig=2;else capeSig=3;indS.cape=cv<25?0:cv<30?clamp((cv-25)/5*33):cv<35?clamp(33+(cv-30)/5*34):100}
+   let sentSig=0;
+   if(idx.co[m]!=null){const sv=idx.co[m];if(sv<55)sentSig=-3;else if(sv<60)sentSig=-2;else if(sv<65)sentSig=-1;else if(sv<95)sentSig=0;else if(sv<100)sentSig=1;else if(sv<105)sentSig=2;else sentSig=3;indS.co=clamp((95-sv)/45*100)}
    if(idx.epu&&idx.epu[m]!=null)indS.epu=clamp(((idx.epu[m]-110)/50)/2*100);
+   /* Composite market signal (-3 to +3) */
+   const mktW=[];
+   if(idx.vx[m]!=null)mktW.push({w:.40,s:vxSig});
+   if(cI[m]!=null)mktW.push({w:.25,s:capeSig});
+   if(idx.co[m]!=null)mktW.push({w:.35,s:sentSig});
+   const mWT=mktW.reduce((a,b)=>a+b.w,0);let mktScore=mWT>0?mktW.reduce((a,b)=>a+b.w*b.s,0)/mWT:null;
+   /* Override logic */
+   if(mktScore!=null){const ext=mktW.filter(x=>Math.abs(x.s)===3);
+    const sb=ext.filter(x=>x.s===-3),ss=ext.filter(x=>x.s===3);
+    if(sb.length&&!ss.length&&mktScore<=0)mktScore=Math.min(mktScore,-2.5);
+    if(ss.length&&!sb.length&&mktScore>=0)mktScore=Math.max(mktScore,2.5)}
+   /* Market score 0-100 for chart (50=hold, 0=str buy, 100=str sell) */
+   const mktPct=mktScore!=null?clamp((mktScore+3)/6*100):null;
    const mktP=[];if(indS.vx!=null)mktP.push({w:.40,s:indS.vx});if(indS.cape!=null)mktP.push({w:.25,s:indS.cape});if(indS.co!=null)mktP.push({w:.35,s:indS.co});
    const mT=mktP.reduce((a,b)=>a+b.w,0);const aM=mT>0?mktP.reduce((a,b)=>a+b.w*b.s,0)/mT:null;
    let rec=null;if(aL!=null&&aC!=null)rec=aL*.75+aC*.25;else if(aL!=null)rec=aL;
-   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,recession:idx.rec[m]===1,spx:idx.spx[m]||null,...indS})}
-  st.bt.data=comp.filter(c=>c.score!=null);st.bt.loaded=true}catch(e){st.bt.err="Failed: "+e.message}st.bt.loading=false;render()}
+   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,recession:idx.rec[m]===1,spx:idx.spx[m]||null,...indS})}
+  const data=comp.filter(c=>c.score!=null);
+  st.bt.data=data;
+  /* === COMPREHENSIVE BACKTEST STATS === */
+  st.bt.stats=calcBacktestStats(data);
+  st.bt.loaded=true}catch(e){st.bt.err="Failed: "+e.message}st.bt.loading=false;render()}
+
+function calcBacktestStats(data){
+ if(!data||data.length<24)return null;
+ const stats={};
+ /* 1. RECESSION SCORE — Detection analysis */
+ const recPeriods=[];let inRec=false,rStart=0;
+ for(let i=0;i<data.length;i++){if(data[i].recession&&!inRec){inRec=true;rStart=i}if(!data[i].recession&&inRec){inRec=false;recPeriods.push({start:rStart,end:i-1})}}
+ if(inRec)recPeriods.push({start:rStart,end:data.length-1});
+ /* For each recession, find score at start, peak, and earliest YELLOW crossing */
+ const recDetails=recPeriods.map(rp=>{
+  const startScore=data[rp.start].score;const peakScore=Math.max(...data.slice(rp.start,rp.end+1).map(d=>d.score||0));
+  let leadMonths=0;for(let j=rp.start-1;j>=Math.max(0,rp.start-36);j--){if(data[j].score>=35){leadMonths=rp.start-j}else break}
+  return{period:`${data[rp.start].month} → ${data[rp.end].month}`,startScore:startScore?.toFixed(0)||"?",peakScore:peakScore.toFixed(0),lead:leadMonths,caught:startScore>=35}});
+ stats.recessions=recDetails;
+ stats.caught=recDetails.filter(r=>r.caught).length;
+ stats.total=recDetails.length;
+ /* F1 score calculation */
+ const thresholds=[25,30,35,40,45,50];
+ stats.thresholdAnalysis=thresholds.map(th=>{
+  let tp=0,fp=0,fn=0,tn=0;
+  data.forEach(d=>{const above=d.score>=th;const isRec=d.recession;
+   if(above&&isRec)tp++;else if(above&&!isRec)fp++;else if(!above&&isRec)fn++;else tn++});
+  const precision=tp/(tp+fp)||0;const recall=tp/(tp+fn)||0;const f1=precision&&recall?2*precision*recall/(precision+recall):0;
+  const fpRate=fp/(fp+tn)||0;
+  return{threshold:th,tp,fp,fn,tn,precision:(precision*100).toFixed(0),recall:(recall*100).toFixed(0),f1:(f1*100).toFixed(0),fpRate:(fpRate*100).toFixed(0)}});
+ /* 2. MARKET SIGNAL — Return analysis */
+ const fwdReturns=[3,6,12];
+ stats.signalReturns={};
+ fwdReturns.forEach(mo=>{
+  const buckets={buy:[],hold:[],sell:[]};
+  for(let i=0;i<data.length-mo;i++){
+   const d=data[i];if(d.mktSignal==null||d.spx==null)continue;
+   const fwd=data[i+mo];if(!fwd||fwd.spx==null)continue;
+   const ret=((fwd.spx-d.spx)/d.spx*100);
+   if(d.mktSignal<=-0.5)buckets.buy.push(ret);
+   else if(d.mktSignal>=0.5)buckets.sell.push(ret);
+   else buckets.hold.push(ret)}
+  const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null;
+  const med=arr=>{if(!arr.length)return null;const s=[...arr].sort((a,b)=>a-b);const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2};
+  const winRate=arr=>arr.length?(arr.filter(r=>r>0).length/arr.length*100):null;
+  stats.signalReturns[mo]={
+   buy:{n:buckets.buy.length,avg:avg(buckets.buy),med:med(buckets.buy),win:winRate(buckets.buy),min:buckets.buy.length?Math.min(...buckets.buy):null,max:buckets.buy.length?Math.max(...buckets.buy):null},
+   hold:{n:buckets.hold.length,avg:avg(buckets.hold),med:med(buckets.hold),win:winRate(buckets.hold)},
+   sell:{n:buckets.sell.length,avg:avg(buckets.sell),med:med(buckets.sell),win:winRate(buckets.sell),min:buckets.sell.length?Math.min(...buckets.sell):null,max:buckets.sell.length?Math.max(...buckets.sell):null},
+   separation:avg(buckets.buy)!=null&&avg(buckets.sell)!=null?(avg(buckets.buy)-avg(buckets.sell)):null}});
+ /* 3. SIGNAL TIMING — When did each signal level fire? */
+ const sigHist=[];let prevSig=null;
+ for(let i=0;i<data.length;i++){
+  const d=data[i];if(d.mktSignal==null)continue;
+  const lvl=d.mktSignal<=-2.5?"STR BUY":d.mktSignal<=-1.5?"BUY":d.mktSignal<=-0.5?"SOFT BUY":d.mktSignal>=2.5?"STR SELL":d.mktSignal>=1.5?"SELL":d.mktSignal>=0.5?"SOFT SELL":"HOLD";
+  if(lvl!==prevSig){
+   if(sigHist.length)sigHist[sigHist.length-1].duration=i-sigHist[sigHist.length-1].startIdx;
+   sigHist.push({level:lvl,month:d.month,startIdx:i,score:d.mktSignal,spx:d.spx});prevSig=lvl}}
+ if(sigHist.length)sigHist[sigHist.length-1].duration=data.length-sigHist[sigHist.length-1].startIdx;
+ stats.signalHistory=sigHist.slice(-30);
+ /* 4. PERIOD ANALYSIS — OOS vs Training */
+ const periods=[{name:"OOS 1995-2015",filter:d=>d.month>="1995-01"&&d.month<="2015-12"},
+  {name:"Training 2016-2026",filter:d=>d.month>="2016-01"},
+  {name:"Full",filter:()=>true}];
+ stats.periodAnalysis=periods.map(p=>{
+  const pd=data.filter(p.filter);const buckets={buy:[],sell:[]};
+  for(let i=0;i<pd.length;i++){
+   const d=pd[i];if(d.mktSignal==null||d.spx==null)continue;
+   const fi=data.indexOf(d);if(fi+6>=data.length)continue;
+   const fwd=data[fi+6];if(!fwd||fwd.spx==null)continue;
+   const ret=((fwd.spx-d.spx)/d.spx*100);
+   if(d.mktSignal<=-0.5)buckets.buy.push(ret);
+   else if(d.mktSignal>=0.5)buckets.sell.push(ret)}
+  const avg=arr=>arr.length?(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1):"-";
+  return{name:p.name,months:pd.length,buys:buckets.buy.length,buyAvg:avg(buckets.buy),sells:buckets.sell.length,sellAvg:avg(buckets.sell),
+   sep:buckets.buy.length&&buckets.sell.length?((buckets.buy.reduce((a,b)=>a+b,0)/buckets.buy.length)-(buckets.sell.reduce((a,b)=>a+b,0)/buckets.sell.length)).toFixed(1):"-"}});
+ /* 5. RECESSION ZONE RETURNS — Do zones predict returns? */
+ stats.zoneReturns={};
+ [{name:"GREEN",min:0,max:35},{name:"YELLOW",min:35,max:60},{name:"ORANGE",min:60,max:80},{name:"RED",min:80,max:101}].forEach(z=>{
+  const rets=[];for(let i=0;i<data.length-12;i++){
+   const d=data[i];if(d.score==null||d.score<z.min||d.score>=z.max)continue;
+   const fwd=data[i+12];if(!fwd||fwd.spx==null||d.spx==null)continue;
+   rets.push((fwd.spx-d.spx)/d.spx*100)}
+  stats.zoneReturns[z.name]={n:rets.length,avg:rets.length?(rets.reduce((a,b)=>a+b,0)/rets.length).toFixed(1):"-",
+   win:rets.length?(rets.filter(r=>r>0).length/rets.length*100).toFixed(0):"-"}});
+ return stats}
+
+/* CSV file loading for S&P backfill */
+function loadCSVFile(file){return new Promise((resolve)=>{const reader=new FileReader();reader.onload=e=>{const lines=e.target.result.split("\n");const rows=[];
+ for(let i=1;i<lines.length;i++){const cols=lines[i].split(",");if(cols.length<2)continue;const date=cols[0].trim();const val=parseFloat(cols[1]);
+  if(!date||isNaN(val))continue;const m=date.substring(0,7);rows.push({month:m,value:val})}
+ resolve(rows)};reader.readAsText(file)})}
+function handleCSVUpload(files){if(!files||!files.length)return;const all=[];
+ Promise.all([...files].map(f=>loadCSVFile(f))).then(results=>{results.forEach(r=>all.push(...r));
+  /* Deduplicate: keep latest value per month */
+  const byMonth={};all.forEach(r=>{byMonth[r.month]=r.value});
+  st.bt.csvData=Object.entries(byMonth).map(([month,value])=>({month,value})).sort((a,b)=>a.month.localeCompare(b.month));
+  st.bt.csvLoaded=true;render()})}
 
 const CP={t:20,b:35,l:36,r:24};
 function getWindowData(){const all=st.bt.data;if(!all)return[];const w=st.bt.window;if(w==="max")return all;const yrs=w==="10y"?10:w==="5y"?5:1;const cut=new Date();cut.setFullYear(cut.getFullYear()-yrs);const cm=cut.toISOString().substring(0,7);return all.filter(d=>d.month>=cm)}
@@ -332,13 +460,18 @@ function render(){const a=document.getElementById("app");
     <div class="m" style="font-size:8px;color:var(--t5);margin-top:6px">Contrarian: extreme bearish historically bullish for stocks</div>
    </div>`}
   if(br){const pct=br.pct;const bC=pct>70?"var(--cl)":pct>50?"var(--ca)":pct>30?"var(--wn)":"var(--st)";
-   const bLabel=pct>70?"Broad participation":pct>50?"Healthy breadth":pct>30?"Narrowing":pct>20?"Weak breadth":"Severe deterioration";
+   const bLabel=pct>70?"Strong trend":pct>50?"Healthy":pct>30?"Weakening":"Deteriorating";
    h+=`<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">MARKET BREADTH</span><span class="m" style="font-size:8px;color:var(--t4)">S&P 500</span></div>
-    <div style="margin-bottom:8px"><span class="m" style="font-size:28px;font-weight:800;color:${bC}">${pct.toFixed(0)}%</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">above 200d MA</span></div>
-    <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.05);overflow:hidden;margin-bottom:6px"><div style="width:${pct}%;height:100%;border-radius:4px;background:${bC};opacity:.7"></div></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">MARKET HEALTH</span><span class="m" style="font-size:8px;color:var(--t4)">S&P 500</span></div>
+    <div style="margin-bottom:8px"><span class="m" style="font-size:28px;font-weight:800;color:${bC}">${pct}</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">/ 100</span></div>
+    <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.05);overflow:hidden;margin-bottom:8px"><div style="width:${pct}%;height:100%;border-radius:4px;background:${bC};opacity:.7"></div></div>
+    <div style="display:flex;gap:8px;margin-bottom:6px">
+     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">200d MA</div><div class="m" style="font-size:11px;font-weight:700;color:${br.abv200?"var(--cl)":"var(--st)"}">${br.abv200?"Above":"Below"}</div><div class="m" style="font-size:8px;color:var(--t5)">${br.ma200}</div></div>
+     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">50d MA</div><div class="m" style="font-size:11px;font-weight:700;color:${br.abv50?"var(--cl)":"var(--st)"}">${br.abv50?"Above":"Below"}</div><div class="m" style="font-size:8px;color:var(--t5)">${br.ma50}</div></div>
+     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">52wk High</div><div class="m" style="font-size:11px;font-weight:700;color:${parseFloat(br.fromHigh)>-5?"var(--cl)":parseFloat(br.fromHigh)>-10?"var(--ca)":"var(--st)"}">${br.fromHigh}%</div></div>
+    </div>
     <div style="display:flex;justify-content:space-between;align-items:center"><span class="m" style="font-size:10px;font-weight:700;color:${bC}">${bLabel}</span><span class="m" style="font-size:8px;color:var(--t5)">${br.source}</span></div>
-    <div class="m" style="font-size:8px;color:var(--t5);margin-top:6px">&lt;30% = slow bear risk (2022-type drawdowns)</div>
+    <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">Below both MAs = slow bear risk (2022-type)</div>
    </div>`}
   else if(aa){/* fill second column if no breadth */
    h+=`<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:center"><div class="m" style="font-size:9px;color:var(--t5);text-align:center">Market breadth unavailable</div></div>`}
@@ -359,19 +492,60 @@ function render(){const a=document.getElementById("app");
   const wtBar=s.w?`<div class="wt-bar" style="width:${s.w*100}%;background:${TIERS[s.tier].color};opacity:.4"></div>`:"";
   let hcomp="";if(op&&(s.pre08!=null||s.pre20!=null)){hcomp=`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">PRE-RECESSION</div><div class="hcomp">${s.pre01!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2001</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre01}</div></div>`:""}${s.pre08!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2008</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre08}</div></div>`:""}${s.pre20!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2020</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre20}</div></div>`:""}</div></div>`}
   return`<div class="card" data-ck="${s.k}" style="background:${cfg.bg};border:1px solid ${cfg.b}"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px"><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">${dot(status)}<span class="m" style="font-size:10px;font-weight:700;color:${cfg.c}">${cfg.l}</span>${s.w?`<span class="m" style="font-size:8px;color:var(--t5)">${(s.w*100).toFixed(0)}%</span>`:""}</div><h3 class="h" style="font-size:17px;font-weight:700;margin-bottom:2px">${s.n}</h3><p class="m" style="font-size:10px;color:#666">${s.s}</p>${wtBar}${sigBadge}</div><div style="text-align:right"><div class="m" style="font-size:26px;font-weight:800;color:${cfg.c};line-height:1.1">${disp}<span style="font-size:11px;opacity:.5">${s.u}</span></div><div class="m" style="font-size:9px;color:var(--t4);margin-top:4px">${lat?.date||""}</div></div></div>${s.isCape||s.isSigmoid?"":spark(show,cfg.c)}${sub}${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}"><div class="desc">${s.desc}</div><div class="db"><div class="m" style="font-size:9px;color:var(--t4)">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div><div class="db"><div class="m" style="font-size:9px;color:var(--t4)">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>${hcomp}<p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`<a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">FRED →</a>`}</p></div>`:""}<div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲":"▼"}</div></div>`}).join("")}</div></div>`}).join("")}
- <div class="bt-wrap"><div class="bt-hdr" onclick="toggleBT()"><div><div class="h" style="font-size:15px;font-weight:700">📊 Composite Backtest</div><p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Recession score vs NBER · Wilshire overlay</p></div><span class="m" style="font-size:12px;color:var(--t4)">${st.bt.open?"▲":"▼"}</span></div>
+ <div class="bt-wrap"><div class="bt-hdr" onclick="toggleBT()"><div><div class="h" style="font-size:15px;font-weight:700">📊 Composite Backtest</div><p class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Recession score + Market signal vs NBER · S&P 500 overlay</p></div><span class="m" style="font-size:12px;color:var(--t4)">${st.bt.open?"▲":"▼"}</span></div>
  ${st.bt.open?`<div class="bt-body">${st.bt.loading?`<div style="text-align:center;padding:30px 0"><div class="lp" style="font-size:24px">📊</div><p class="m" style="font-size:11px;color:#666;margin-top:10px">Loading...</p></div>`:st.bt.err?`<p class="m" style="color:var(--st)">${st.bt.err}</p>`:st.bt.loaded?`
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-   <div style="display:flex;gap:5px;flex-wrap:wrap">${tgBtn("score","Recession","#FFC107")} ${tgBtn("spx","Wilshire","#64B5F6")} ${tgBtn("leading","Leading","#42A5F5")} ${tgBtn("confirming","Confirming","#AB47BC")} ${tgBtn("market","Market","#FFA726")}</div>
+   <div style="display:flex;gap:5px;flex-wrap:wrap">${tgBtn("score","Recession","#FFC107")} ${tgBtn("spx","S&P 500","#64B5F6")} ${tgBtn("leading","Leading","#42A5F5")} ${tgBtn("confirming","Confirming","#AB47BC")} ${tgBtn("market","Market","#FFA726")}</div>
    <div style="display:flex;gap:4px">${["max","10y","5y","1y"].map(w=>`<button class="tw-btn ${st.bt.window===w?"active":""}" onclick="setWindow('${w}')">${w.toUpperCase()}</button>`).join("")}</div></div>
   <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">${S.map(s=>tgBtn(s.k,s.n.split(" ")[0],s.btColor)).join("")}</div>
   ${renderBTChart()}
-  <div style="display:flex;gap:12px;margin-top:10px"><div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.08)"></div><span class="m" style="font-size:8px;color:var(--t4)">NBER Recession</span></div><div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:2px;background:#64B5F6;opacity:.6"></div><span class="m" style="font-size:8px;color:var(--t4)">Wilshire 5000</span></div></div>
- `:`<button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer">LOAD BACKTEST</button>`}</div>`:""}</div>
+  <div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap"><div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.08)"></div><span class="m" style="font-size:8px;color:var(--t4)">NBER Recession</span></div><div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:2px;background:#64B5F6;opacity:.6"></div><span class="m" style="font-size:8px;color:var(--t4)">S&P 500</span></div></div>
+  ${(()=>{const s=st.bt.stats;if(!s)return"";return`
+  <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--bd)">
+   <div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-bottom:12px">RECESSION DETECTION ANALYSIS</div>
+   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+    <div style="background:rgba(0,0,0,.2);border-radius:6px;padding:10px;text-align:center"><div class="m" style="font-size:8px;color:var(--t4)">CAUGHT</div><div class="m" style="font-size:20px;font-weight:800;color:var(--cl)">${s.caught}/${s.total}</div></div>
+    <div style="background:rgba(0,0,0,.2);border-radius:6px;padding:10px;text-align:center"><div class="m" style="font-size:8px;color:var(--t4)">BEST F1</div><div class="m" style="font-size:20px;font-weight:800;color:var(--ca)">${Math.max(...s.thresholdAnalysis.map(t=>parseInt(t.f1)))}</div></div>
+    <div style="background:rgba(0,0,0,.2);border-radius:6px;padding:10px;text-align:center"><div class="m" style="font-size:8px;color:var(--t4)">DATA RANGE</div><div class="m" style="font-size:11px;font-weight:700;color:var(--t2)">${st.bt.data[0]?.month} → ${st.bt.data[st.bt.data.length-1]?.month}</div></div>
+   </div>
+   ${s.recessions.length?`<div class="db" style="margin-bottom:12px"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">RECESSION DETECTION DETAIL</div>
+    <table style="width:100%;font-size:11px;border-collapse:collapse"><tr><th style="text-align:left;padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">PERIOD</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">START</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">PEAK</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">LEAD</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">HIT</th></tr>
+    ${s.recessions.map(r=>`<tr><td class="m" style="padding:4px 6px;color:var(--t2);font-size:10px">${r.period}</td><td class="m" style="padding:4px 6px;text-align:center;color:${parseInt(r.startScore)>=35?"var(--cl)":"var(--wn)"}">${r.startScore}</td><td class="m" style="padding:4px 6px;text-align:center;color:${parseInt(r.peakScore)>=80?"var(--st)":parseInt(r.peakScore)>=60?"var(--wn)":"var(--ca)"}">${r.peakScore}</td><td class="m" style="padding:4px 6px;text-align:center">${r.lead?r.lead+"mo":"-"}</td><td style="padding:4px 6px;text-align:center">${r.caught?'<span style="color:var(--cl)">✓</span>':'<span style="color:var(--st)">✗</span>'}</td></tr>`).join("")}</table></div>`:""}
+   <div class="db" style="margin-bottom:12px"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">THRESHOLD OPTIMIZATION</div>
+    <table style="width:100%;font-size:11px;border-collapse:collapse"><tr><th style="text-align:left;padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">THRESH</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">F1</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">PREC</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">REC</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">FP%</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">TP</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">FP</th></tr>
+    ${s.thresholdAnalysis.map(t=>{const best=parseInt(t.f1)===Math.max(...s.thresholdAnalysis.map(x=>parseInt(x.f1)));return`<tr style="${best?"background:rgba(255,193,7,.06)":""}${t.threshold===35?";border-left:2px solid var(--ca)":""}"><td class="m" style="padding:4px 6px;color:${t.threshold===35?"var(--ca)":"var(--t2)"};font-weight:${t.threshold===35?700:400}">${t.threshold}${t.threshold===35?" ←":""}</td><td class="m" style="padding:4px 6px;text-align:center;font-weight:700;color:${best?"var(--ca)":"var(--t2)"}">${t.f1}</td><td class="m" style="padding:4px 6px;text-align:center">${t.precision}%</td><td class="m" style="padding:4px 6px;text-align:center">${t.recall}%</td><td class="m" style="padding:4px 6px;text-align:center;color:${parseInt(t.fpRate)>50?"var(--st)":parseInt(t.fpRate)>30?"var(--wn)":"var(--cl)"}">${t.fpRate}%</td><td class="m" style="padding:4px 6px;text-align:center">${t.tp}</td><td class="m" style="padding:4px 6px;text-align:center">${t.fp}</td></tr>`}).join("")}</table>
+    <div class="m" style="font-size:8px;color:var(--t5);margin-top:6px">Current YELLOW threshold: 35. F1 = 2×Precision×Recall/(P+R). Higher = better.</div></div>
+   <div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">MARKET SIGNAL RETURN ANALYSIS</div>
+   ${Object.entries(s.signalReturns).map(([mo,r])=>`<div class="db" style="margin-bottom:10px"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">FORWARD ${mo}-MONTH RETURNS</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+     <div style="background:rgba(0,230,118,.05);border-radius:6px;padding:8px;text-align:center;border:1px solid rgba(0,230,118,.15)"><div class="m" style="font-size:8px;color:var(--t4)">BUY (n=${r.buy.n})</div><div class="m" style="font-size:16px;font-weight:800;color:var(--cl)">${r.buy.avg!=null?"+"+r.buy.avg.toFixed(1)+"%":"-"}</div><div class="m" style="font-size:8px;color:var(--t5)">med: ${r.buy.med!=null?r.buy.med.toFixed(1)+"%":"-"} · win: ${r.buy.win!=null?r.buy.win.toFixed(0)+"%":"-"}</div>${r.buy.min!=null?`<div class="m" style="font-size:7px;color:var(--t5)">range: ${r.buy.min.toFixed(1)} to +${r.buy.max.toFixed(1)}</div>`:""}</div>
+     <div style="background:rgba(120,144,156,.05);border-radius:6px;padding:8px;text-align:center;border:1px solid rgba(120,144,156,.15)"><div class="m" style="font-size:8px;color:var(--t4)">HOLD (n=${r.hold.n})</div><div class="m" style="font-size:16px;font-weight:800;color:var(--t2)">${r.hold.avg!=null?"+"+r.hold.avg.toFixed(1)+"%":"-"}</div><div class="m" style="font-size:8px;color:var(--t5)">med: ${r.hold.med!=null?r.hold.med.toFixed(1)+"%":"-"} · win: ${r.hold.win!=null?r.hold.win.toFixed(0)+"%":"-"}</div></div>
+     <div style="background:rgba(255,145,0,.05);border-radius:6px;padding:8px;text-align:center;border:1px solid rgba(255,145,0,.15)"><div class="m" style="font-size:8px;color:var(--t4)">SELL (n=${r.sell.n})</div><div class="m" style="font-size:16px;font-weight:800;color:var(--wn)">${r.sell.avg!=null?"+"+r.sell.avg.toFixed(1)+"%":"-"}</div><div class="m" style="font-size:8px;color:var(--t5)">med: ${r.sell.med!=null?r.sell.med.toFixed(1)+"%":"-"} · win: ${r.sell.win!=null?r.sell.win.toFixed(0)+"%":"-"}</div>${r.sell.min!=null?`<div class="m" style="font-size:7px;color:var(--t5)">range: ${r.sell.min.toFixed(1)} to +${r.sell.max.toFixed(1)}</div>`:""}</div>
+    </div>
+    <div class="m" style="font-size:9px;text-align:center;margin-top:6px;color:${r.separation!=null&&r.separation>0?"var(--cl)":"var(--st)"};font-weight:700">Separation: ${r.separation!=null?(r.separation>0?"+":"")+r.separation.toFixed(1)+"pp":"-"}</div></div>`).join("")}
+   <div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">OOS vs TRAINING PERIOD</div>
+   <div class="db"><table style="width:100%;font-size:11px;border-collapse:collapse"><tr><th style="text-align:left;padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">PERIOD</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">MO</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">BUYS</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">BUY AVG</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">SELLS</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">SELL AVG</th><th style="padding:4px 6px;color:var(--t4);font-size:9px;border-bottom:1px solid var(--bd)">SEP</th></tr>
+   ${s.periodAnalysis.map(p=>`<tr><td class="m" style="padding:4px 6px;color:var(--t2)">${p.name}</td><td class="m" style="padding:4px 6px;text-align:center">${p.months}</td><td class="m" style="padding:4px 6px;text-align:center">${p.buys}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--cl)">${p.buyAvg}%</td><td class="m" style="padding:4px 6px;text-align:center">${p.sells}</td><td class="m" style="padding:4px 6px;text-align:center">${p.sellAvg}%</td><td class="m" style="padding:4px 6px;text-align:center;font-weight:700;color:${parseFloat(p.sep)>0?"var(--cl)":"var(--st)"}">${p.sep}pp</td></tr>`).join("")}</table>
+   <div class="m" style="font-size:8px;color:var(--t5);margin-top:6px">6-month forward returns. OOS = never used in optimization. Positive separation on OOS validates the model.</div></div>
+   <div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">RECESSION ZONE → 12mo S&P RETURNS</div>
+   <div class="db"><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    ${[{z:"GREEN",c:"var(--cl)"},{z:"YELLOW",c:"var(--ca)"},{z:"ORANGE",c:"var(--wn)"},{z:"RED",c:"var(--st)"}].map(({z,c})=>{const zr=s.zoneReturns[z]||{};return`<div style="text-align:center;padding:6px;background:rgba(0,0,0,.15);border-radius:6px"><div class="m" style="font-size:8px;color:${c};font-weight:700">${z}</div><div class="m" style="font-size:14px;font-weight:800;color:var(--t2);margin-top:2px">${zr.avg}%</div><div class="m" style="font-size:7px;color:var(--t5)">n=${zr.n} · win ${zr.win}%</div></div>`}).join("")}
+   </div><div class="m" style="font-size:8px;color:var(--t5);margin-top:6px">Recession zones do NOT predict returns. GREEN ≈ RED avg return confirms the score is for recession detection, not market timing.</div></div>
+   <div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">RECENT SIGNAL CHANGES</div>
+   <div class="db" style="max-height:200px;overflow-y:auto"><table style="width:100%;font-size:10px;border-collapse:collapse">
+    ${s.signalHistory.map(sh=>{const c=sh.score<=-2?"var(--cl)":sh.score<=-0.5?"#66BB6A":sh.score>=2?"var(--st)":sh.score>=0.5?"var(--wn)":"var(--t3)";return`<tr><td class="m" style="padding:3px 6px;color:var(--t3)">${sh.month}</td><td class="m" style="padding:3px 6px;color:${c};font-weight:700">${sh.level}</td><td class="m" style="padding:3px 6px;color:var(--t4)">${sh.duration||1}mo</td><td class="m" style="padding:3px 6px;color:var(--t5)">${sh.spx!=null?"S&P "+sh.spx.toLocaleString(undefined,{maximumFractionDigits:0}):""}</td></tr>`}).join("")}</table></div>
+  </div>`})()}
+ `:`<div style="margin-bottom:10px"><button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer">LOAD BACKTEST</button></div>
+  <div style="padding:10px 14px;background:rgba(0,0,0,.15);border-radius:8px;border:1px solid var(--bd)">
+   <div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">S&P 500 CSV BACKFILL (optional)</div>
+   <p style="font-size:11px;color:var(--t3);margin-bottom:8px;line-height:1.5">Upload SP500.csv and/or SP500_base.csv to extend S&P history before FRED coverage (~1990). Format: Date,Close</p>
+   <input type="file" id="csv-upload" accept=".csv" multiple onchange="handleCSVUpload(this.files)" style="font-size:11px;color:var(--t3)">
+   ${st.bt.csvLoaded?`<div class="m" style="font-size:9px;color:var(--cl);margin-top:6px">✓ ${st.bt.csvData.length} months loaded (${st.bt.csvData[0]?.month} → ${st.bt.csvData[st.bt.csvData.length-1]?.month})</div>`:""}
+  </div>`}</div>`:""}</div>
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v16</strong>: CAPE fallback+cache, AAII investor sentiment, market breadth (% >200MA), sell signal return framing.<br>
+ <strong style="color:var(--t4)">v16</strong>: CAPE fallback+cache, AAII investor sentiment, S&P health proxy, sell signal return framing, comprehensive backtest stats.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
@@ -381,7 +555,7 @@ function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}els
 function toggleBT(){st.bt.open=!st.bt.open;render()}
 function togOv(k){st.bt.ov[k]=!st.bt.ov[k];render()}
 function setWindow(w){st.bt.window=w;render();setTimeout(bindBTChart,120)}
-function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.momentum=null;st.aaii=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,err:null,ov:defaultOv(),window:"max"};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
+function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.momentum=null;st.aaii=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
