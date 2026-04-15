@@ -138,17 +138,27 @@ function calcMarketSignal(){const vD=st.d.vx||[],coD=st.d.co||[],epuD=st.d.epu||
  return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS,epu:eS},bearRegime:mom.bearRegime,bearDamp}}
 
 function getStrategy(){const comp=calcComposite();const ms=calcMarketSignal();const r=comp.recession!=null?comp.recession:0;const m=ms.score;
- /* v15.1: thresholds 35/60/80 */
+ /* v16.1: thresholds 35/60/80. RED (>80) differentiated from ORANGE (60-80).
+    Cash % now escalates with recession risk. VIX bypass unlocks FULL OFFENSE
+    when panic hits a healthy economy regardless of CAPE drag. */
  const rl=r>80?"RED":r>60?"ORANGE":r>35?"YELLOW":"GREEN";const md=m<-0.5?"BUY":m>0.5?"SELL":"HOLD";
- if(rl==="GREEN"&&md==="BUY")return{color:"#00E676",label:"FULL OFFENSE",text:"Economy clear + stocks cheap. Buy pullbacks aggressively."};
- if(rl==="GREEN"&&md==="HOLD")return{color:"#00E676",label:"DEPLOYED",text:"Economy clear, fairly valued. Stay invested, normal sizing."};
- if(rl==="GREEN"&&md==="SELL"){const cTxt=st.cape?` (CAPE ${st.cape.toFixed(0)}x)`:"";return{color:"#FF9100",label:"OVERVALUED RALLY",text:`Economy healthy but reduced upside${cTxt}. Sell signals avg +5.3% vs +12.5% for buys (6mo). Keep 30-40% powder dry.`}}
- if(rl==="YELLOW"&&md==="BUY")return{color:"#FFC107",label:"SELECTIVE BUYING",text:"Early recession risk + discounted. Historical buy avg: +12.5% forward 6mo. Buy quality only."};
- if(rl==="YELLOW"&&md==="HOLD")return{color:"#FFC107",label:"CAUTION",text:"Recession risk rising. Tighten stops. Build cash 15-20%."};
- if(rl==="YELLOW"&&md==="SELL")return{color:"#FF9100",label:"DEFENSIVE",text:"Recession risk + reduced upside. Sell avg: +5.3% (6mo) vs +6.6% baseline. Cash 25-35%. Favor dividends."};
- if((rl==="ORANGE"||rl==="RED")&&md==="BUY")return{color:"#00E676",label:"MAX OPPORTUNITY",text:"Recession + capitulation pricing. Historical buy avg: +12.5% forward 6mo. Deploy aggressively."};
- if((rl==="ORANGE"||rl==="RED")&&md==="HOLD")return{color:"#FF9100",label:"WAIT FOR CAPITULATION",text:"Recession active but not yet cheap. Hold cash for better entry."};
- return{color:"#FF1744",label:"PRESERVATION",text:"Recession + reduced upside. Sell avg: +5.3% (6mo) but elevated drawdown risk. Cash 40-50%. Hedge."};}
+ /* VIX panic bypass: when VIX >40 fires the extreme-fear/capitulation bypass
+    AND the economy is GREEN, CAPE's structural sell drag should not block a buy.
+    CAPE is a valuation tool, not a crisis signal. */
+ const vixPanic=ms.signals&&ms.signals.vix&&ms.signals.vix.mom==="bypass"&&ms.signals.vix.score<=-2;
+ if(rl==="GREEN"&&vixPanic){const cTxt=st.cape?` (CAPE ${st.cape.toFixed(0)}x — elevated but fear creates entry)`:"";return{color:"#00E676",label:"FULL OFFENSE",text:`Panic pricing in healthy economy${cTxt}. VIX bypass active. Scale in aggressively — 0-5% cash reserve.`}}
+ if(rl==="GREEN"&&md==="BUY")return{color:"#00E676",label:"FULL OFFENSE",text:"Economy clear + stocks discounted. Buy pullbacks aggressively. 0-5% cash reserve."};
+ if(rl==="GREEN"&&md==="HOLD")return{color:"#00E676",label:"DEPLOYED",text:"Economy clear, fairly valued. Stay fully invested. 5-10% cash for rebalancing."};
+ if(rl==="GREEN"&&md==="SELL"){const cTxt=st.cape?` (CAPE ${st.cape.toFixed(0)}x)`:"";return{color:"#FF9100",label:"OVERVALUED RALLY",text:`Economy healthy but reduced upside${cTxt}. Sell signals avg +5.3% vs +12.5% for buys (6mo). Keep 20-30% dry — upside capped, not a crisis.`}}
+ if(rl==="YELLOW"&&md==="BUY")return{color:"#FFC107",label:"SELECTIVE BUYING",text:"Early recession risk + discounted. Historical buy avg: +12.5% fwd 6mo. Buy quality only. 10-20% cash."};
+ if(rl==="YELLOW"&&md==="HOLD")return{color:"#FFC107",label:"CAUTION",text:"Recession risk rising. Tighten stops. Build cash 15-25%."};
+ if(rl==="YELLOW"&&md==="SELL")return{color:"#FF9100",label:"DEFENSIVE",text:"Recession risk + reduced upside. Sell avg: +5.3% (6mo) but drawdown risk rising. Cash 30-40%. Favor short-duration and dividends."};
+ if(rl==="ORANGE"&&md==="BUY")return{color:"#00E676",label:"MAX OPPORTUNITY",text:"Recession confirmed + capitulation pricing. Historical buy avg: +12.5% fwd 6mo. Deploy 60-70% over 3 months."};
+ if(rl==="ORANGE"&&md==="HOLD")return{color:"#FF9100",label:"WAIT FOR CAPITULATION",text:"Recession active, not yet cheap. Hold 40-50% cash. Wait for VIX spike or Sahm peak to deploy."};
+ if(rl==="ORANGE"&&md==="SELL")return{color:"#FF1744",label:"PRESERVATION",text:"Recession + overvalued. Elevated drawdown risk. Cash 45-55%. Minimize equity, favor short-term bonds."};
+ if(rl==="RED"&&md==="BUY")return{color:"#00E676",label:"CYCLE LOW",text:"Deep recession + capitulation pricing. Generational entry signal. Deploy 80-100% over 4-6 weeks. Highest conviction buy."};
+ if(rl==="RED"&&md==="HOLD")return{color:"#FF9100",label:"MAXIMUM DEFENSE",text:"Deep recession confirmed, no panic yet. Hold 50-65% cash. Wait for VIX >40 signal before deploying."};
+ return{color:"#FF1744",label:"CRISIS MODE",text:"Deep recession + still overvalued. Highest-risk environment. Cash 60-75%. Treasury/gold hedge. Minimal equity."};}
 
 const S=[
  {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y−2Y · Post-inversion bonus",u:"%",tier:"leading",w:.45,btColor:"#42A5F5",desc:"Best recession predictor. Scores spread <+0.5% as risk. +15pt post-inversion bonus for 12 months.",th:"+0.5%(0) to −0.3%(100). Post-inv: +15pts.",hi:"8/8 since 1970. 45% Leading.",pre08:-0.19,pre20:0.04,pre01:-0.52,ev:v=>v==null?"unknown":v<-.3?"stress":v<0?"warning":v<.2?"caution":v<.5?"watch":"clear"},
@@ -555,7 +565,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v16 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). CAPE with fallback+cache. AAII investor sentiment. Market breadth. Sell signal return framing.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v16.1 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). CAPE with fallback+cache. AAII investor sentiment. Market breadth. Sell signal return framing.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const strat=getStrategy();const ms=calcMarketSignal();const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -738,7 +748,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v16</strong>: CAPE fallback+cache, AAII investor sentiment, S&P health proxy, sell signal return framing, comprehensive backtest stats.<br>
+ <strong style="color:var(--t4)">v16.1</strong>: Matrix fixes — cash % ladder corrected, RED zone differentiated (CYCLE LOW / MAXIMUM DEFENSE / CRISIS MODE), VIX bypass unlocks FULL OFFENSE during panic in healthy economy.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
