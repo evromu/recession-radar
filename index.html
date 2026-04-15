@@ -607,7 +607,7 @@ function render(){const a=document.getElementById("app");
      ${aa.neutral!=null?`<div style="width:${aa.neutral}%;background:var(--wa);opacity:.4"></div>`:""}
      <div style="width:${aa.bear}%;background:var(--st);opacity:.6"></div>
     </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><div class="m" style="font-size:8px;color:var(--t5)">Contrarian: extreme bearish historically bullish for stocks</div><a href="https://www.aaii.com/sentimentsurvey/sent_results" target="_blank" class="m" style="font-size:8px;color:var(--t4);text-decoration:none">AAII →</a></div>
+    <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div style="font-size:10px;color:#888;line-height:1.6">Weekly survey of individual investors (not institutions). Members report whether they are bullish, bearish, or neutral on the stock market over the next 6 months. Extreme readings are contrarian — when bears exceed 50%, forward 6-month returns have historically averaged +15%. When bulls exceed 60%, returns drop to ~+2%.</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="m" style="font-size:8px;color:var(--t5)">Display only — not in composite. Supplements UMich consumer sentiment.</span><a href="https://www.aaii.com/sentimentsurvey/sent_results" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">aaii.com/sentimentsurvey →</a></div></div>
    </div>`}
   if(br){const pct=br.pct;const bC=pct>70?"var(--cl)":pct>50?"var(--ca)":pct>30?"var(--wn)":"var(--st)";
    const bLabel=pct>70?"Strong trend":pct>50?"Healthy":pct>30?"Weakening":"Deteriorating";
