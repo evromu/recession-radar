@@ -222,7 +222,7 @@ function calcVixRolling(){const vd=st.d.vx||[];const vals=vd.map(d=>parseFloat(d
 function analyzeYC(d){if(!d||d.length<5)return{ycUD:null,ycInv:false};let ud=null,inv=false;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v<0)inv=true;else if(inv&&!ud)ud=d[i].date}return{ycUD:ud,ycInv:inv}}
 function analyzeSahm(d){if(!d||d.length<3)return{sahmD:null,sahmPk:null};let td=null,pk=0;for(let i=0;i<d.length;i++){const v=parseFloat(d[i].value);if(isNaN(v))continue;if(v>pk)pk=v;if(v>=.5&&!td)td=d[i].date}return{sahmD:td,sahmPk:pk}}
 function peakPct(d){if(!d||d.length<10)return null;const v=d.map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(v.length<10)return null;return(((v[v.length-1]-Math.max(...v))/Math.max(...v))*100).toFixed(1)}
-function checkPostInversion(){const ad=st.al;if(!ad.ycUD||!ad.ycInv)return false;const mo=Math.round((new Date()-new Date(ad.ycUD+"T00:00:00"))/(1000*60*60*24*30.44));return mo>=0&&mo<=12}
+function checkPostInversion(){const ad=st.al;if(!ad.ycUD||!ad.ycInv)return false;const mo=Math.round((new Date()-new Date(ad.ycUD+"T00:00:00"))/(1000*60*60*24*30.44));return mo>=0&&mo<12}
 
 /* v15.1: YC scoring range 0.5 to -0.3 (0.8 total) */
 function calcComposite(){const ycObs=st.d.yc||[];const ycLat=ycObs.length?parseFloat(ycObs[ycObs.length-1].value):null;let ycScore=ycLat!=null?clamp((0.5-ycLat)/0.8*100):null;st.postInvBonus=checkPostInversion();if(st.postInvBonus&&ycScore!=null)ycScore=Math.min(100,ycScore+15);
@@ -276,11 +276,14 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
   const months=[...allD].sort();const idx={};for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
   const vixMos=months.filter(m=>idx.vx[m]!=null).sort();const vixZbt={};
   for(let i=0;i<vixMos.length;i++){const w=vixMos.slice(Math.max(0,i-60),i+1).map(m=>idx.vx[m]).filter(v=>!isNaN(v));if(w.length>12){const mn=w.reduce((a,b)=>a+b,0)/w.length;const sd=Math.sqrt(w.map(v=>(v-mn)**2).reduce((a,b)=>a+b,0)/w.length);vixZbt[vixMos[i]]=(idx.vx[vixMos[i]]-mn)/(sd||1)}}
-  const spxMos=months.filter(m=>idx.spx[m]!=null).sort();const spxMA={};
-  for(let i=0;i<spxMos.length;i++){const w=spxMos.slice(Math.max(0,i-9),i+1).map(m=>idx.spx[m]);spxMA[spxMos[i]]=w.reduce((a,b)=>a+b,0)/w.length}
+  const spxMos=months.filter(m=>idx.spx[m]!=null).sort();const spxMA={},spxMA12={},spxMA46={};
+  for(let i=0;i<spxMos.length;i++){
+   const w=spxMos.slice(Math.max(0,i-9),i+1).map(m=>idx.spx[m]);spxMA[spxMos[i]]=w.reduce((a,b)=>a+b,0)/w.length;
+   const w12=spxMos.slice(Math.max(0,i-11),i+1).map(m=>idx.spx[m]);spxMA12[spxMos[i]]=w12.reduce((a,b)=>a+b,0)/w12.length;
+   const w46=spxMos.slice(Math.max(0,i-45),i+1).map(m=>idx.spx[m]);spxMA46[spxMos[i]]=w46.length>=24?w46.reduce((a,b)=>a+b,0)/w46.length:null}
   let ycWI=false,ycUM=null;const comp=[];
   for(const m of months){const indS={};const ycV=idx.yc[m];if(ycV!=null&&!isNaN(ycV)){if(ycV<0)ycWI=true;else if(ycWI&&!ycUM)ycUM=m}
-   let postInv=false;if(ycUM){const um=new Date(ycUM+"-01"),cm=new Date(m+"-01");const diff=(cm-um)/(1000*60*60*24*30.44);if(diff>=0&&diff<=12)postInv=true;if(diff>12){ycWI=false;ycUM=null}}
+   let postInv=false;if(ycUM){const um=new Date(ycUM+"-01"),cm=new Date(m+"-01");const diff=(cm-um)/(1000*60*60*24*30.44);if(diff>=0&&diff<12)postInv=true;if(diff>=12){ycWI=false;ycUM=null}}
    const lead=[];if(ycV!=null&&!isNaN(ycV)){let s=clamp((0.5-ycV)/0.8*100);if(postInv)s=Math.min(100,s+15);lead.push({w:.45,s});indS.yc=s}
    if(idx.cr[m]!=null&&!isNaN(idx.cr[m])){const s=clamp((idx.cr[m]-3)/7*100);lead.push({w:.35,s});indS.cr=s}
    if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){const s=clamp((idx.ic[m]/idx.clf[m]-0.8)/2.5*100);lead.push({w:.20,s});indS.ic=s}
@@ -302,35 +305,56 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
    let sentSig=0;
    if(idx.co[m]!=null){const sv=idx.co[m];if(sv<55)sentSig=-3;else if(sv<60)sentSig=-2;else if(sv<65)sentSig=-1;else if(sv<95)sentSig=0;else if(sv<100)sentSig=1;else if(sv<105)sentSig=2;else sentSig=3;indS.co=clamp((95-sv)/45*100)}
    if(idx.epu&&idx.epu[m]!=null)indS.epu=clamp(((idx.epu[m]-110)/50)/2*100);
-   /* Bear regime detection for backtest */
-   let btBear=false;
+   /* ── Bear Regime A/B Detection ── */
+   /* A: Current (below 10mo MA + >7% drawdown) */
+   let btBearA=false;
    if(idx.spx[m]!=null&&spxMA[m]!=null){
     const abvMA=idx.spx[m]>spxMA[m];
     const prev12=spxMos.filter(x=>x<=m).slice(-12).map(x=>idx.spx[x]).filter(v=>v!=null);
     const high12=prev12.length?Math.max(...prev12):idx.spx[m];
     const dd=((idx.spx[m]-high12)/high12)*100;
-    btBear=!abvMA&&dd<-7;
-    /* Dampen sentiment contrarian buy in bear regime */
-    if(btBear&&sentSig<0)sentSig=Math.round(sentSig*0.5)}
-   /* Composite market signal (-3 to +3) */
+    btBearA=!abvMA&&dd<-7}
+   /* B: Death Cross (12mo SMA < 46mo SMA) */
+   let btBearB=false;
+   if(spxMA12[m]!=null&&spxMA46[m]!=null)btBearB=spxMA12[m]<spxMA46[m];
+   /* Use A as primary (preserves current behavior) */
+   const btBear=btBearA;
+   /* Compute sentiment dampening for each approach */
+   const sentSigOrig=sentSig;
+   const sentSigA=btBearA&&sentSigOrig<0?Math.round(sentSigOrig*0.5):sentSigOrig;
+   const sentSigB=btBearB&&sentSigOrig<0?Math.round(sentSigOrig*0.5):sentSigOrig;
+   sentSig=sentSigA;/* primary uses A */
+   /* Composite market signal for A (-3 to +3) */
    const mktW=[];
    if(idx.vx[m]!=null)mktW.push({w:.40,s:vxSig});
    if(cI[m]!=null)mktW.push({w:.25,s:capeSig});
-   if(idx.co[m]!=null)mktW.push({w:.35,s:sentSig});
+   if(idx.co[m]!=null)mktW.push({w:.35,s:sentSigA});
    const mWT=mktW.reduce((a,b)=>a+b.w,0);let mktScore=mWT>0?mktW.reduce((a,b)=>a+b.w*b.s,0)/mWT:null;
-   /* Bear regime tilt: +0.3 toward sell */
-   if(btBear&&mktScore!=null)mktScore+=0.3;
-   /* Override logic */
+   if(btBearA&&mktScore!=null)mktScore+=0.3;
+   /* Composite market signal for B */
+   let mktScoreB=null;
+   if(mWT>0){const bW=[];
+    if(idx.vx[m]!=null)bW.push({w:.40,s:vxSig});
+    if(cI[m]!=null)bW.push({w:.25,s:capeSig});
+    if(idx.co[m]!=null)bW.push({w:.35,s:sentSigB});
+    const bWT=bW.reduce((a,b)=>a+b.w,0);mktScoreB=bWT>0?bW.reduce((a,b)=>a+b.w*b.s,0)/bWT:null;
+    if(btBearB&&mktScoreB!=null)mktScoreB+=0.3}
+   /* Override logic for A */
    if(mktScore!=null){const ext=mktW.filter(x=>Math.abs(x.s)===3);
     const sb=ext.filter(x=>x.s===-3),ss=ext.filter(x=>x.s===3);
     if(sb.length&&!ss.length&&mktScore<=0)mktScore=Math.min(mktScore,-2.5);
     if(ss.length&&!sb.length&&mktScore>=0)mktScore=Math.max(mktScore,2.5)}
-   /* Market score 0-100 for chart (50=hold, 0=str buy, 100=str sell) */
+   /* Override logic for B */
+   if(mktScoreB!=null){const extB=mktW.filter(x=>Math.abs(x.s)===3);
+    const sbB=extB.filter(x=>x.s===-3),ssB=extB.filter(x=>x.s===3);
+    if(sbB.length&&!ssB.length&&mktScoreB<=0)mktScoreB=Math.min(mktScoreB,-2.5);
+    if(ssB.length&&!sbB.length&&mktScoreB>=0)mktScoreB=Math.max(mktScoreB,2.5)}
+   /* Market score 0-100 for chart */
    const mktPct=mktScore!=null?clamp((mktScore+3)/6*100):null;
    const mktP=[];if(indS.vx!=null)mktP.push({w:.40,s:indS.vx});if(indS.cape!=null)mktP.push({w:.25,s:indS.cape});if(indS.co!=null)mktP.push({w:.35,s:indS.co});
    const mT=mktP.reduce((a,b)=>a+b.w,0);const aM=mT>0?mktP.reduce((a,b)=>a+b.w*b.s,0)/mT:null;
    let rec=null;if(aL!=null&&aC!=null)rec=aL*.75+aC*.25;else if(aL!=null)rec=aL;
-   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,recession:idx.rec[m]===1,spx:idx.spx[m]||null,bearRegime:btBear,...indS})}
+   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,mktSignalB:mktScoreB,recession:idx.rec[m]===1,spx:idx.spx[m]||null,bearRegime:btBear,bearRegimeB:btBearB,...indS})}
   const data=comp.filter(c=>c.score!=null);
   st.bt.data=data;
   /* === COMPREHENSIVE BACKTEST STATS === */
@@ -443,6 +467,30 @@ function calcBacktestStats(data){
  if(inBear){const startSpx=data[bStart].spx;
   stats.bearRegime.periods.push({start:data[bStart].month,end:data[data.length-1].month,months:data.length-bStart,drawdown:"-",
    signals:{sell:data.slice(bStart).filter(d=>d.mktSignal>=0.5).length,hold:data.slice(bStart).filter(d=>d.mktSignal>-0.5&&d.mktSignal<0.5).length,buy:data.slice(bStart).filter(d=>d.mktSignal<=-0.5).length}})}
+ /* 7. BEAR REGIME A/B COMPARISON */
+ stats.bearAB={};
+ ['A','B'].forEach(label=>{
+  const bearKey=label==='A'?'bearRegime':'bearRegimeB';
+  const sigKey=label==='A'?'mktSignal':'mktSignalB';
+  const bearMo=data.filter(d=>d[bearKey]);
+  const distBear={buy:0,hold:0,sell:0};
+  bearMo.forEach(d=>{if(d[sigKey]==null)return;if(d[sigKey]<=-0.5)distBear.buy++;else if(d[sigKey]>=0.5)distBear.sell++;else distBear.hold++});
+  const bearRets=[],normalRets=[];
+  for(let i=0;i<data.length-6;i++){const d=data[i];if(d.spx==null)continue;const fwd=data[i+6];if(!fwd||fwd.spx==null)continue;
+   const ret=(fwd.spx-d.spx)/d.spx*100;if(d[bearKey])bearRets.push(ret);else normalRets.push(ret)}
+  const buyRets=[],sellRets=[],holdRets=[];
+  for(let i=0;i<data.length-6;i++){const d=data[i];if(d[sigKey]==null||d.spx==null)continue;const fwd=data[i+6];if(!fwd||fwd.spx==null)continue;
+   const ret=(fwd.spx-d.spx)/d.spx*100;if(d[sigKey]<=-0.5)buyRets.push(ret);else if(d[sigKey]>=0.5)sellRets.push(ret);else holdRets.push(ret)}
+  const y2022=data.filter(d=>d.month>='2022-01'&&d.month<='2022-12').map(d=>({month:d.month,bear:d[bearKey],signal:d[sigKey]!=null?d[sigKey].toFixed(2):null,label:d[sigKey]!=null?sigLevel(Math.round(d[sigKey])).short:'-',spx:d.spx}));
+  const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null;
+  stats.bearAB[label]={
+   name:label==='A'?'Current (10mo MA + 7% DD)':'Death Cross (12mo < 46mo SMA)',short:label==='A'?'A: MA+DD':'B: Death Cross',
+   totalBear:bearMo.length,distBear,
+   bearAvg6:avg(bearRets),normalAvg6:avg(normalRets),
+   buyAvg6:avg(buyRets),sellAvg6:avg(sellRets),holdAvg6:avg(holdRets),
+   buyN:buyRets.length,sellN:sellRets.length,holdN:holdRets.length,
+   separation:avg(buyRets)!=null&&avg(sellRets)!=null?avg(buyRets)-avg(sellRets):null,
+   y2022}});
  return stats}
 
 /* CSV file loading for S&P backfill — handles FRED, Yahoo, Shiller, and generic formats */
@@ -654,6 +702,31 @@ function render(){const a=document.getElementById("app");
    ${s.bearRegime.periods.length?`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">BEAR REGIME PERIODS</div>
     <table style="width:100%;font-size:10px;border-collapse:collapse"><tr><th style="text-align:left;padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">PERIOD</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">MO</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">DRAW</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SELL</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">HOLD</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">BUY</th></tr>
     ${s.bearRegime.periods.map(p=>`<tr><td class="m" style="padding:3px 6px;color:var(--t2)">${p.start} → ${p.end}</td><td class="m" style="padding:3px 6px;text-align:center">${p.months}</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--st)">${p.drawdown}%</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--cl)">${p.signals.sell}</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--ca)">${p.signals.hold}</td><td class="m" style="padding:3px 6px;text-align:center;color:${p.signals.buy>0?"var(--st)":"var(--t4)"}">${p.signals.buy}</td></tr>`).join("")}</table></div>`:""}`:""}
+   ${s.bearAB?`<div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">BEAR REGIME A/B COMPARISON</div>
+   <div class="db" style="margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+     ${['A','B'].map(k=>{const ab=s.bearAB[k];if(!ab)return'';const bdr=k==='A'?'rgba(255,193,7,.2)':'rgba(100,181,246,.2)';const col=k==='A'?'var(--ca)':'#64B5F6';return`
+     <div style="background:rgba(0,0,0,.15);border-radius:6px;padding:10px;border:1px solid ${bdr}">
+      <div class="m" style="font-size:9px;color:${col};font-weight:700;margin-bottom:8px">${ab.name}</div>
+      <div class="m" style="font-size:10px;color:var(--t2)">Bear months: <b>${ab.totalBear}</b></div>
+      <div class="m" style="font-size:10px;color:var(--st)">Bear avg 6mo: ${ab.bearAvg6!=null?ab.bearAvg6.toFixed(1)+'%':'-'}</div>
+      <div class="m" style="font-size:10px;color:var(--cl)">Normal avg 6mo: ${ab.normalAvg6!=null?ab.normalAvg6.toFixed(1)+'%':'-'}</div>
+      <div class="m" style="font-size:9px;color:var(--t4);margin-top:6px">In bear → Sell: ${ab.distBear.sell} · Hold: ${ab.distBear.hold} · Buy: ${ab.distBear.buy}</div>
+     </div>`}).join('')}
+    </div>
+    <div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">BUY/SELL SEPARATION — ALL MONTHS, 6mo forward</div>
+    <table style="width:100%;font-size:10px;border-collapse:collapse">
+     <tr><th style="text-align:left;padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">APPROACH</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">BUY AVG</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">N</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SELL AVG</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">N</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SEP</th></tr>
+     ${['A','B'].map(k=>{const ab=s.bearAB[k];if(!ab)return'';const best=s.bearAB.A&&s.bearAB.B&&ab.separation!=null&&((k==='A'&&ab.separation>=s.bearAB.B.separation)||(k==='B'&&ab.separation>s.bearAB.A.separation));return`
+     <tr style="${best?'background:rgba(0,230,118,.06)':''}"><td class="m" style="padding:4px 6px;color:${k==='A'?'var(--ca)':'#64B5F6'};font-weight:700">${ab.short}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--cl)">${ab.buyAvg6!=null?'+'+ab.buyAvg6.toFixed(1)+'%':'-'}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--t4)">${ab.buyN}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--wn)">${ab.sellAvg6!=null?'+'+ab.sellAvg6.toFixed(1)+'%':'-'}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--t4)">${ab.sellN}</td><td class="m" style="padding:4px 6px;text-align:center;font-weight:700;color:${best?'var(--cl)':'var(--t2)'}">${ab.separation!=null?(ab.separation>0?'+':'')+ab.separation.toFixed(1)+'pp':'-'}</td></tr>`}).join('')}
+    </table>
+    <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">Higher separation = better. Green row = winner. Separation = buy avg − sell avg (6mo forward returns).</div>
+    ${s.bearAB.A&&s.bearAB.A.y2022.length?`<div class="m" style="font-size:9px;color:var(--t4);margin-top:12px;margin-bottom:6px">2022 MONTHLY DETAIL (slow bear test case)</div>
+    <div style="max-height:220px;overflow-y:auto"><table style="width:100%;font-size:9px;border-collapse:collapse">
+     <tr><th style="text-align:left;padding:3px 5px;color:var(--t4);font-size:7px;border-bottom:1px solid var(--bd)">MONTH</th><th style="padding:3px 5px;color:var(--t4);font-size:7px;border-bottom:1px solid var(--bd)">S&P</th><th style="padding:3px 5px;color:var(--ca);font-size:7px;border-bottom:1px solid var(--bd)">A BEAR</th><th style="padding:3px 5px;color:var(--ca);font-size:7px;border-bottom:1px solid var(--bd)">A SIG</th><th style="padding:3px 5px;color:#64B5F6;font-size:7px;border-bottom:1px solid var(--bd)">B BEAR</th><th style="padding:3px 5px;color:#64B5F6;font-size:7px;border-bottom:1px solid var(--bd)">B SIG</th></tr>
+     ${s.bearAB.A.y2022.map((a,i)=>{const b=s.bearAB.B.y2022[i]||{};return`<tr><td class="m" style="padding:3px 5px;color:var(--t3)">${a.month}</td><td class="m" style="padding:3px 5px;text-align:center">${a.spx!=null?a.spx.toLocaleString(undefined,{maximumFractionDigits:0}):'-'}</td><td class="m" style="padding:3px 5px;text-align:center;color:${a.bear?'var(--st)':'var(--t5)'}">${a.bear?'YES':'-'}</td><td class="m" style="padding:3px 5px;text-align:center;color:${a.signal<=-0.5?'var(--cl)':a.signal>=0.5?'var(--st)':'var(--t3)'}"><b>${a.label}</b></td><td class="m" style="padding:3px 5px;text-align:center;color:${b.bear?'var(--st)':'var(--t5)'}">${b.bear?'YES':'-'}</td><td class="m" style="padding:3px 5px;text-align:center;color:${b.signal<=-0.5?'var(--cl)':b.signal>=0.5?'var(--st)':'var(--t3)'}"><b>${b.label||'-'}</b></td></tr>`}).join('')}
+    </table></div>
+    <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">A = below 10mo MA + &gt;7% drawdown. B = 12mo SMA &lt; 46mo SMA (death cross ~50wk/200wk). Goal: generate SELL during 2022 -25% grind.</div>`:''}</div>`:''}
   </div>`})()}
  `:`<div style="margin-bottom:10px"><button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer">LOAD BACKTEST</button></div>
   <div style="padding:10px 14px;background:rgba(0,0,0,.15);border-radius:8px;border:1px solid var(--bd)">
