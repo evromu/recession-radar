@@ -183,7 +183,7 @@ function getStrategy(preComp,preMs){const comp=preComp||calcComposite();const ms
 
 const S=[
  {k:"yc",f:"T10Y2Y",n:"Yield Curve",s:"10Y−2Y · Post-inversion bonus",u:"%",tier:"leading",w:.45,btColor:"#42A5F5",desc:"Best recession predictor. Scores spread <+0.5% as risk. +15pt post-inversion bonus for 12 months.",th:"+0.5%(0) to −0.3%(100). Post-inv: +15pts.",hi:"8/8 since 1970. 45% Leading.",pre08:-0.19,pre20:0.04,pre01:-0.52,ev:v=>v==null?"unknown":v<-.3?"stress":v<0?"warning":v<.2?"caution":v<.5?"watch":"clear"},
- {k:"cr",f:"BAMLH0A0HYM2",n:"Credit Spreads",s:"ICE BofA HY OAS",u:"%",tier:"leading",w:.35,btColor:"#26C6DA",desc:"Bond market leads stocks. +10pt YC interaction.",th:"<3% Normal | 5-8% Stress | >8% Crisis",hi:"35% Leading.",pre08:7.96,pre20:3.57,pre01:6.45,ev:v=>v==null?"unknown":v>8?"stress":v>5?"warning":v>3.5?"caution":"clear"},
+ {k:"cr",f:"BAMLH0A0HYM2",n:"Credit Spreads",s:"ICE BofA HY OAS",u:"%",tier:"leading",w:.35,btColor:"#26C6DA",desc:"Bond market leads stocks. +15pt velocity bonus (>150bps/3mo). +10pt YC interaction.",th:"<3% Normal | 5-8% Stress | >8% Crisis | Velocity >150bps/3mo: +15",hi:"35% Leading.",pre08:7.96,pre20:3.57,pre01:6.45,ev:v=>v==null?"unknown":v>8?"stress":v>5?"warning":v>3.5?"caution":"clear"},
  {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Claims / CLF Ratio",u:"",tier:"leading",w:.20,btColor:"#66BB6A",desc:"Weekly filings / Civilian Labor Force.",th:"Ratio: <1.3 Healthy | >2.0 Warning",hi:"20% Leading.",pre08:346,pre20:282,pre01:305,ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",divK:true,hasCLF:true},
  {k:"sa",f:"SAHMREALTIME",n:"Sahm Rule",s:"Unemployment Momentum",u:" pp",tier:"confirming",w:.60,btColor:"#AB47BC",desc:"At 0.50pp = recession.",th:"≥0.50 Recession | 0.30 Approaching",hi:"60% Confirming.",pre08:0.53,pre20:0.5,pre01:0.3,ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear"},
  {k:"mf",f:"MANEMP",n:"Mfg Employment",s:"Manufacturing Jobs",u:"K",tr:1,tier:"confirming",w:.40,btColor:"#EC407A",desc:"Manufacturing contracts before broader economy.",th:"3-mo losses >50K = Stress",hi:"40% Confirming.",ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear"},
@@ -328,10 +328,10 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
    if(idx.cr[m]!=null&&!isNaN(idx.cr[m])){const s=clamp((idx.cr[m]-3)/7*100);
     let crVelBonus=false;const crMos=months.slice(Math.max(0,mi-3),mi+1).filter(x=>idx.cr[x]!=null);
     if(crMos.length>=4){const crNow=idx.cr[crMos[crMos.length-1]],cr3ago=idx.cr[crMos[0]];if(crNow-cr3ago>1.50)crVelBonus=true}
-    const sFinal=crVelBonus?Math.min(100,s+15):s;lead.push({w:.35,s:sFinal});indS.cr=sFinal}
+    const sFinal=crVelBonus?Math.min(100,s+15):s;lead.push({w:.35,s:sFinal});indS.cr=sFinal;indS.crRaw=s}
    if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){const s=clamp((idx.ic[m]/idx.clf[m]-0.8)/2.5*100);lead.push({w:.20,s});indS.ic=s}
    const lT=lead.reduce((a,b)=>a+b.w,0);let aL=lT>0?lead.reduce((a,b)=>a+b.w*b.s,0)/lT:null;
-   if(indS.yc!=null&&indS.cr!=null&&indS.yc>50&&indS.cr>50&&aL!=null)aL=Math.min(100,aL+10);
+   if(indS.yc!=null&&indS.crRaw!=null&&indS.yc>50&&indS.crRaw>50&&aL!=null)aL=Math.min(100,aL+10);
    const conf=[];if(idx.sa[m]!=null&&!isNaN(idx.sa[m])){const s=clamp(idx.sa[m]/0.6*100);conf.push({w:.60,s});indS.sa=s}
    const mfK=months.slice(Math.max(0,mi-3),mi+1);if(mfK.length>=4){const v0=idx.mf[mfK[0]],v3=idx.mf[mfK[3]];if(v0!=null&&v3!=null){const s=clamp((50-(v3-v0))/150*100);conf.push({w:.40,s});indS.mf=s}}
    const cT=conf.reduce((a,b)=>a+b.w,0);const aC=cT>0?conf.reduce((a,b)=>a+b.w*b.s,0)/cT:null;
