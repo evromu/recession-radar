@@ -60,12 +60,12 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17 METHODOLOGY ═══
+/* ═══ v17.1 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
-     Thresholds: GREEN 0-35, YELLOW 35-60, ORANGE 60-80, RED 80+
    MARKET SIGNAL: VIX 40% (hybrid z-score, MA10 gate, proportional override)
      + CAPE 25% (ECY softener with 3 inflation/rate gates) + Sentiment 35%
-   v17: ECY+gates CAPE modifier, credit spread velocity bonus, proportional VIX override
+   v17.1: Perf fixes (cached composite, O(n) backtest). Death cross removed.
+     EPU moved to reference panel. Market Health merged into S&P context card.
 ═══════════════════════════════════════════════════════ */
 const SIG_LEVELS=[{v:-3,label:"STRONG BUY",short:"STR BUY",color:"#00E676",bg:"rgba(0,230,118,.12)"},{v:-2,label:"BUY",short:"BUY",color:"#00C853",bg:"rgba(0,200,83,.10)"},{v:-1,label:"SOFT BUY",short:"SOFT BUY",color:"#66BB6A",bg:"rgba(102,187,106,.08)"},{v:0,label:"HOLD",short:"HOLD",color:"#78909C",bg:"rgba(120,144,156,.08)"},{v:1,label:"SOFT SELL",short:"SOFT SELL",color:"#FFC107",bg:"rgba(255,193,7,.10)"},{v:2,label:"SELL",short:"SELL",color:"#FF9100",bg:"rgba(255,145,0,.10)"},{v:3,label:"STRONG SELL",short:"STR SELL",color:"#FF1744",bg:"rgba(255,23,68,.12)"}];
 function sigLevel(v){return SIG_LEVELS.find(l=>l.v===Math.max(-3,Math.min(3,Math.round(v))))||SIG_LEVELS[3]}
@@ -120,11 +120,11 @@ function calcECYModifier(){
   if(rNow&&r6){const rateChg=rNow-r6;if(rateChg>0.75)return{modifier:0,ecy,gateBlocked:`10Y +${rateChg.toFixed(2)}% > 0.75%`}}}
  return{modifier:-1,ecy,gateBlocked:null}}
 
-function calcMarketSignal(){const vD=st.d.vx||[],coD=st.d.co||[],epuD=st.d.epu||[];
- const vix=vD.length?parseFloat(vD[vD.length-1].value):null;const sent=coD.length?parseFloat(coD[coD.length-1].value):null;const epu=epuD.length?parseFloat(epuD[epuD.length-1].value):null;
+function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
+ const vix=vD.length?parseFloat(vD[vD.length-1].value):null;const sent=coD.length?parseFloat(coD[coD.length-1].value):null;
  const vZ=st.vixRolling?parseFloat(st.vixRolling.z):null;
  const mom=calcMomentum();st.momentum=mom;
- const vS=vixSignalHybrid(vix,vZ,mom.abvMA),eS=epuSignal(epu);
+ const vS=vixSignalHybrid(vix,vZ,mom.abvMA);
  const cS_raw=capeSignal(st.cape);const ecyMod=calcECYModifier();st.ecyData=ecyMod;
  const cS={...cS_raw};if(ecyMod.modifier!==0){cS.score=Math.max(-3,Math.min(3,cS_raw.score+ecyMod.modifier));cS.note+=` [ECY ${ecyMod.ecy.toFixed(1)}% → softened]`}
  /* Bear regime: dampen sentiment's contrarian buy signal.
@@ -148,7 +148,7 @@ function calcMarketSignal(){const vD=st.d.vx||[],coD=st.d.co||[],epuD=st.d.epu||
     but shifts HOLD → SOFT SELL in grinding bears like 2022. */
  if(mom.bearRegime)bs+=0.3;
  /* Proportional override: scale by recession health. Full at GREEN (0), zero at ORANGE/RED (80+) */
- const recScore=calcComposite().recession||0;
+ const recScore=(preComp||calcComposite()).recession||0;
  const ovrScale=Math.max(0,1-recScore/80);
  let ov=null;const ext=w.filter(x=>Math.abs(x.sig.score)===3&&x.canOvr);
  if(ext.length){const sb=ext.filter(x=>x.sig.score===-3),ss=ext.filter(x=>x.sig.score===3);
@@ -156,9 +156,9 @@ function calcMarketSignal(){const vD=st.d.vx||[],coD=st.d.co||[],epuD=st.d.epu||
   if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX & Sentiment extremes conflict."};
   else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+` capitulation (${(ovrScale*100).toFixed(0)}% strength, rec ${recScore.toFixed(0)})`};bs=Math.min(bs,buyFloor)}
   else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+` extreme (${(ovrScale*100).toFixed(0)}% strength)`};bs=Math.max(bs,sellFloor)}}
- return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS,epu:eS},bearRegime:mom.bearRegime,bearDamp}}
+ return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:mom.bearRegime,bearDamp}}
 
-function getStrategy(){const comp=calcComposite();const ms=calcMarketSignal();const r=comp.recession!=null?comp.recession:0;const m=ms.score;
+function getStrategy(preComp,preMs){const comp=preComp||calcComposite();const ms=preMs||calcMarketSignal(comp);const r=comp.recession!=null?comp.recession:0;const m=ms.score;
  /* v16.1: thresholds 35/60/80. RED (>80) differentiated from ORANGE (60-80).
     Cash % now escalates with recession risk. VIX bypass unlocks FULL OFFENSE
     when panic hits a healthy economy regardless of CAPE drag. */
@@ -190,14 +190,14 @@ const S=[
  {k:"vx",f:"VIXCLS",n:"VIX",s:"Hybrid + MA10 momentum gate",u:"",tier:"market",btColor:"#EF5350",isSigmoid:true,mktW:"40%",desc:"Hybrid: absolute extremes always fire. Z-score transition requires S&P above 10-month MA. Blocks buying into grinding bears. OOS validated +4.9pp on 1995-2015.",th:"Extremes: >50/40/35/<12. Z-score buy: only if S&P > 10mo MA.",hi:"VIX 40%. MA10-gated. OOS validated.",pre08:23.0,pre20:14.0,pre01:25.5,ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
  {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Valuation · No override",u:"x",isCape:true,tier:"market",btColor:"#FFA726",mktW:"25%",desc:">35 STR SELL. 145yr validated. Cannot override.",th:"<12 STR BUY | 15-20 SOFT BUY | 30-35 SELL | >35 STR SELL",hi:"CAPE 25%. 145yr validated.",pre08:27.3,pre20:31.3,pre01:44.2,ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
  {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Contrarian · Override-capable",u:"",tier:"market",btColor:"#FF7043",mktW:"35%",desc:"<55 STR BUY, >105 STR SELL. Override-capable contrarian.",th:"<55 STR BUY | 60-65 SOFT BUY | 95-100 SOFT SELL | >105 STR SELL",hi:"Sentiment 35%. Override-capable.",pre08:63.0,pre20:101.0,pre01:94.7,ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear"},
- {k:"epu",f:"USEPUINDXD",n:"Policy Uncertainty",s:"Display only",u:"σ",tier:"market",btColor:"#7E57C2",isSD:true,mktW:"REF",desc:"Removed from composite. Backtest: every label change was wrong.",th:">300 Crisis | >200 Major | >150 Elevated",hi:"Display only. 0% weight.",pre08:137,pre20:186,pre01:134,ev:v=>v==null?"unknown":v>250?"stress":v>180?"warning":v>130?"caution":v>100?"watch":"clear"},
 ];
+/* EPU removed from S array in v17.1 — fetched standalone for reference card */
 
 const MC_GROUPS=[{id:"prices",icon:"📊",label:"MARKET PRICES",items:[{id:"sp500",f:"SP500",n:"S&P 500",pk:true,d:0,desc:"Primary equity benchmark."},{id:"nasdaq",f:"NASDAQCOM",n:"NASDAQ",pk:true,d:0,desc:"Tech/growth index."},{id:"dxy",f:"DTWEXBGS",n:"DXY Dollar",d:1,desc:"Strong dollar hurts multinationals/EM."},{id:"oil",f:"DCOILBRENTEU",n:"Brent Oil",p:"$",d:2,desc:"Inflation input, geopolitical proxy."}]},{id:"rates",icon:"🏦",label:"RATES & POLICY",items:[{id:"y10",f:"DGS10",n:"10Y Yield",x:"%",d:2,desc:"Drives mortgages and DCF valuations."},{id:"y2",f:"DGS2",n:"2Y Yield",x:"%",d:2,desc:"Forward Fed expectations."},{id:"ff",f:"DFF",n:"Fed Funds",x:"%",d:2,desc:"Current overnight rate."},{id:"bs",f:"WALCL",n:"Fed Balance Sheet",d:0,desc:"Rising=QE, Falling=QT.",fmt:v=>"$"+(v/1e6).toFixed(2)+"T",dir:d=>{if(!d||d.length<2)return null;return parseFloat(d[d.length-1].value)>parseFloat(d[d.length-2].value)?"QE":"QT"}}]},{id:"economy",icon:"📈",label:"ECONOMY & INFLATION",items:[{id:"cpi",f:"CPIAUCSL",n:"CPI YoY",isYoY:true,desc:"Consumer inflation.",fmt:(v,d)=>{if(!d||d.length<13)return"—";const c=parseFloat(d[d.length-1].value),y=parseFloat(d[d.length-13]?.value);return c&&y?((c-y)/y*100).toFixed(1)+"%":"—"},dir:d=>{if(!d||d.length<14)return null;const c=parseFloat(d[d.length-1].value),y=parseFloat(d[d.length-13]?.value),cp=parseFloat(d[d.length-2].value),yp=parseFloat(d[d.length-14]?.value);if(!c||!y||!cp||!yp)return null;return((c-y)/y)>((cp-yp)/yp)?"RISING":"FALLING"}},{id:"gdp",f:"A191RL1Q225SBEA",n:"Real GDP",d:1,x:"%",desc:"Two negative quarters = recession. LAGGING.",dir:d=>{if(!d||d.length<1)return null;return parseFloat(d[d.length-1].value)>0?"GROWTH":"CONTRACTION"},badge:"LAGGING"},{id:"m2",f:"WM2NS",n:"M2 Money",d:0,desc:"Broad money supply.",fmt:v=>"$"+(v/1000).toFixed(1)+"T",dir:d=>{if(!d||d.length<2)return null;return parseFloat(d[d.length-1].value)>parseFloat(d[d.length-2].value)?"EXPANDING":"CONTRACTING"}},{id:"sav",f:"PSAVERT",n:"Savings Rate",d:1,x:"%",desc:"Below 3% = consumers stretched. Above 8% = cushion.",dir:d=>{if(!d||d.length<2)return null;return parseFloat(d[d.length-1].value)>parseFloat(d[d.length-2].value)?"RISING":"FALLING"}}]}];
 
 const TIERS={leading:{label:"LEADING",color:"#42A5F5",desc:"75% of recession score"},confirming:{label:"CONFIRMING",color:"#AB47BC",desc:"25% of recession score"},market:{label:"MARKET SIGNALS",color:"#FFA726",desc:"7-level buy/sell (separate)"}};
 const ST={clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:"CLEAR"},watch:{c:"#78909C",bg:"rgba(120,144,156,.06)",b:"rgba(120,144,156,.18)",l:"WATCH"},caution:{c:"#FFC107",bg:"rgba(255,193,7,.07)",b:"rgba(255,193,7,.22)",l:"CAUTION"},warning:{c:"#FF9100",bg:"rgba(255,145,0,.07)",b:"rgba(255,145,0,.22)",l:"WARNING"},stress:{c:"#FF1744",bg:"rgba(255,23,68,.07)",b:"rgba(255,23,68,.22)",l:"STRESS"},unknown:{c:"#555",bg:"rgba(85,85,85,.05)",b:"rgba(85,85,85,.15)",l:"—"}};
-const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx:true,yc:false,cr:false,ic:false,sa:false,mf:false,vx:false,cape:false,co:false,epu:false});
+const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx:true,yc:false,cr:false,ic:false,sa:false,mf:false,vx:false,cape:false,co:false});
 
 let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},ld:false,err:null,upd:null,px:0,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
  bt:{open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false}};
@@ -281,6 +281,8 @@ async function loadAll(){st.ld=true;st.err=null;render();let ok=0,fl=[],mcOk=0,m
  for(const g of MC_GROUPS){for(const item of g.items){try{const lim=item.pk?500:item.isYoY?26:12;const data=await ff(item.f,st.key,lim);st.mcFull[item.id]=data;st.mc[item.id]=data.slice(-5);mcOk++}catch{st.mc[item.id]=[];st.mcFull[item.id]=[];mcFl.push(item.n)}}}
  /* DFII10 — 10Y TIPS real yield for ECY calculation */
  try{st.d.dfii10=await ff('DFII10',st.key,30)}catch{st.d.dfii10=[]}
+ /* EPU — standalone fetch for reference card */
+ try{st.d.epu=await ff('USEPUINDXD',st.key,30)}catch{st.d.epu=[]}
  /* CAPE from multpl.com (with fallback + cache) */
  await fetchCAPE();
  /* Claims/CLF ratio */
@@ -304,7 +306,7 @@ async function loadAll(){st.ld=true;st.err=null;render();let ok=0,fl=[],mcOk=0,m
 
 /* BACKTEST — v16: S&P 500 (FRED + CSV backfill), comprehensive stats */
 async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
- try{const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC",spx:"SP500",epu:"USEPUINDXM",dfii10:"DFII10",cpi:"CPIAUCSL",dgs10:"DGS10"};
+ try{const ids={yc:"T10Y2Y",sa:"SAHMREALTIME",cr:"BAMLH0A0HYM2",mf:"MANEMP",co:"UMCSENT",vx:"VIXCLS",ic:"ICSA",clf:"CLF16OV",rec:"USREC",spx:"SP500",dfii10:"DFII10",cpi:"CPIAUCSL",dgs10:"DGS10"};
   const raw={};for(const[k,id] of Object.entries(ids)){try{raw[k]=await ff(id,st.key,k==="spx"?2000:500,"m")}catch{raw[k]=[]}}
   /* CSV backfill: if SP500_base.csv or SP500.csv loaded via file input, merge */
   if(st.bt.csvData&&st.bt.csvData.length){const csvIdx={};st.bt.csvData.forEach(r=>{if(!csvIdx[r.month])csvIdx[r.month]=r.value});
@@ -316,24 +318,22 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
   const months=[...allD].sort();const idx={};for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
   const vixMos=months.filter(m=>idx.vx[m]!=null).sort();const vixZbt={};
   for(let i=0;i<vixMos.length;i++){const w=vixMos.slice(Math.max(0,i-60),i+1).map(m=>idx.vx[m]).filter(v=>!isNaN(v));if(w.length>12){const mn=w.reduce((a,b)=>a+b,0)/w.length;const sd=Math.sqrt(w.map(v=>(v-mn)**2).reduce((a,b)=>a+b,0)/w.length);vixZbt[vixMos[i]]=(idx.vx[vixMos[i]]-mn)/(sd||1)}}
-  const spxMos=months.filter(m=>idx.spx[m]!=null).sort();const spxMA={},spxMA12={},spxMA46={};
-  for(let i=0;i<spxMos.length;i++){
-   const w=spxMos.slice(Math.max(0,i-9),i+1).map(m=>idx.spx[m]);spxMA[spxMos[i]]=w.reduce((a,b)=>a+b,0)/w.length;
-   const w12=spxMos.slice(Math.max(0,i-11),i+1).map(m=>idx.spx[m]);spxMA12[spxMos[i]]=w12.reduce((a,b)=>a+b,0)/w12.length;
-   const w46=spxMos.slice(Math.max(0,i-45),i+1).map(m=>idx.spx[m]);spxMA46[spxMos[i]]=w46.length>=24?w46.reduce((a,b)=>a+b,0)/w46.length:null}
+  const spxMos=months.filter(m=>idx.spx[m]!=null).sort();const spxMA={};
+  /* Death Cross (bear regime B) removed in v17.1 — never fired 2009-2024, confirmed no value. */
+  for(let i=0;i<spxMos.length;i++){const w=spxMos.slice(Math.max(0,i-9),i+1).map(m=>idx.spx[m]);spxMA[spxMos[i]]=w.reduce((a,b)=>a+b,0)/w.length}
   let ycWI=false,ycUM=null;const comp=[];
-  for(const m of months){const indS={};const ycV=idx.yc[m];if(ycV!=null&&!isNaN(ycV)){if(ycV<0)ycWI=true;else if(ycWI&&!ycUM)ycUM=m}
+  for(let mi=0;mi<months.length;mi++){const m=months[mi];const indS={};const ycV=idx.yc[m];if(ycV!=null&&!isNaN(ycV)){if(ycV<0)ycWI=true;else if(ycWI&&!ycUM)ycUM=m}
    let postInv=false;if(ycUM){const um=new Date(ycUM+"-01"),cm=new Date(m+"-01");const diff=(cm-um)/(1000*60*60*24*30.44);if(diff>=0&&diff<12)postInv=true;if(diff>=12){ycWI=false;ycUM=null}}
    const lead=[];if(ycV!=null&&!isNaN(ycV)){let s=clamp((0.5-ycV)/0.8*100);if(postInv)s=Math.min(100,s+15);lead.push({w:.45,s});indS.yc=s}
    if(idx.cr[m]!=null&&!isNaN(idx.cr[m])){const s=clamp((idx.cr[m]-3)/7*100);
-    let crVelBonus=false;const crMos=months.filter(x=>x<=m&&idx.cr[x]!=null).slice(-4);
+    let crVelBonus=false;const crMos=months.slice(Math.max(0,mi-3),mi+1).filter(x=>idx.cr[x]!=null);
     if(crMos.length>=4){const crNow=idx.cr[crMos[crMos.length-1]],cr3ago=idx.cr[crMos[0]];if(crNow-cr3ago>1.50)crVelBonus=true}
     const sFinal=crVelBonus?Math.min(100,s+15):s;lead.push({w:.35,s:sFinal});indS.cr=sFinal}
    if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){const s=clamp((idx.ic[m]/idx.clf[m]-0.8)/2.5*100);lead.push({w:.20,s});indS.ic=s}
    const lT=lead.reduce((a,b)=>a+b.w,0);let aL=lT>0?lead.reduce((a,b)=>a+b.w*b.s,0)/lT:null;
    if(indS.yc!=null&&indS.cr!=null&&indS.yc>50&&indS.cr>50&&aL!=null)aL=Math.min(100,aL+10);
    const conf=[];if(idx.sa[m]!=null&&!isNaN(idx.sa[m])){const s=clamp(idx.sa[m]/0.6*100);conf.push({w:.60,s});indS.sa=s}
-   const mfK=months.filter(x=>x<=m).slice(-4);if(mfK.length>=4){const v0=idx.mf[mfK[0]],v3=idx.mf[mfK[3]];if(v0!=null&&v3!=null){const s=clamp((50-(v3-v0))/150*100);conf.push({w:.40,s});indS.mf=s}}
+   const mfK=months.slice(Math.max(0,mi-3),mi+1);if(mfK.length>=4){const v0=idx.mf[mfK[0]],v3=idx.mf[mfK[3]];if(v0!=null&&v3!=null){const s=clamp((50-(v3-v0))/150*100);conf.push({w:.40,s});indS.mf=s}}
    const cT=conf.reduce((a,b)=>a+b.w,0);const aC=cT>0?conf.reduce((a,b)=>a+b.w*b.s,0)/cT:null;
    /* Market signal scoring */
    let vxSig=0;
@@ -347,65 +347,42 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
    if(cI[m]!=null){const cv=cI[m];if(cv<12)capeSig=-3;else if(cv<15)capeSig=-2;else if(cv<20)capeSig=-1;else if(cv<25)capeSig=0;else if(cv<30)capeSig=1;else if(cv<35)capeSig=2;else capeSig=3;indS.cape=cv<25?0:cv<30?clamp((cv-25)/5*33):cv<35?clamp(33+(cv-30)/5*34):100}
    /* ECY modifier in backtest */
    if(cI[m]!=null&&idx.dfii10[m]!=null){const btECY=(1/cI[m]*100)-idx.dfii10[m];let ecySoften=btECY>=3;
-    if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.filter(x=>x<=m).slice(-13);if(cpiMos.length>=13){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[0]];if(cN&&c12&&((cN-c12)/c12*100)>4.0)ecySoften=false}}
-    if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.filter(x=>x<=m).slice(-19);if(cpiMos.length>=19){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[cpiMos.length-13]],c6=idx.cpi[cpiMos[cpiMos.length-7]],c18=idx.cpi[cpiMos[0]];if(cN&&c12&&c6&&c18){const cpiNow=(cN-c12)/c12*100,cpi6=(c6-c18)/c18*100;if((cpiNow-cpi6)>1.0)ecySoften=false}}}
-    if(ecySoften&&idx.dgs10[m]!=null){const dMos=months.filter(x=>x<=m).slice(-7);if(dMos.length>=7){const rN=idx.dgs10[dMos[dMos.length-1]],r6=idx.dgs10[dMos[0]];if(rN&&r6&&(rN-r6)>0.75)ecySoften=false}}
+    if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.slice(Math.max(0,mi-12),mi+1);if(cpiMos.length>=13){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[0]];if(cN&&c12&&((cN-c12)/c12*100)>4.0)ecySoften=false}}
+    if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.slice(Math.max(0,mi-18),mi+1);if(cpiMos.length>=19){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[cpiMos.length-13]],c6=idx.cpi[cpiMos[cpiMos.length-7]],c18=idx.cpi[cpiMos[0]];if(cN&&c12&&c6&&c18){const cpiNow=(cN-c12)/c12*100,cpi6=(c6-c18)/c18*100;if((cpiNow-cpi6)>1.0)ecySoften=false}}}
+    if(ecySoften&&idx.dgs10[m]!=null){const dMos=months.slice(Math.max(0,mi-6),mi+1);if(dMos.length>=7){const rN=idx.dgs10[dMos[dMos.length-1]],r6=idx.dgs10[dMos[0]];if(rN&&r6&&(rN-r6)>0.75)ecySoften=false}}
     if(ecySoften)capeSig=Math.max(-3,capeSig-1)}
    let sentSig=0;
    if(idx.co[m]!=null){const sv=idx.co[m];if(sv<55)sentSig=-3;else if(sv<60)sentSig=-2;else if(sv<65)sentSig=-1;else if(sv<95)sentSig=0;else if(sv<100)sentSig=1;else if(sv<105)sentSig=2;else sentSig=3;indS.co=clamp((95-sv)/45*100)}
-   if(idx.epu&&idx.epu[m]!=null)indS.epu=clamp(((idx.epu[m]-110)/50)/2*100);
-   /* ── Bear Regime A/B Detection ── */
-   /* A: Current (below 10mo MA + >7% drawdown) */
-   let btBearA=false;
+   /* Bear regime detection */
+   let btBear=false;
    if(idx.spx[m]!=null&&spxMA[m]!=null){
     const abvMA=idx.spx[m]>spxMA[m];
     const prev12=spxMos.filter(x=>x<=m).slice(-12).map(x=>idx.spx[x]).filter(v=>v!=null);
     const high12=prev12.length?Math.max(...prev12):idx.spx[m];
     const dd=((idx.spx[m]-high12)/high12)*100;
-    btBearA=!abvMA&&dd<-7}
-   /* B: Death Cross (12mo SMA < 46mo SMA) */
-   let btBearB=false;
-   if(spxMA12[m]!=null&&spxMA46[m]!=null)btBearB=spxMA12[m]<spxMA46[m];
-   /* Use A as primary (preserves current behavior) */
-   const btBear=btBearA;
-   /* Compute sentiment dampening for each approach */
-   const sentSigOrig=sentSig;
-   const sentSigA=btBearA&&sentSigOrig<0?Math.round(sentSigOrig*0.5):sentSigOrig;
-   const sentSigB=btBearB&&sentSigOrig<0?Math.round(sentSigOrig*0.5):sentSigOrig;
-   sentSig=sentSigA;/* primary uses A */
-   /* Composite market signal for A (-3 to +3) */
+    btBear=!abvMA&&dd<-7}
+   /* Dampen sentiment contrarian buy in bear regime */
+   if(btBear&&sentSig<0)sentSig=Math.round(sentSig*0.5);
+   /* Composite market signal (-3 to +3) */
    const mktW=[];
    if(idx.vx[m]!=null)mktW.push({w:.40,s:vxSig});
    if(cI[m]!=null)mktW.push({w:.25,s:capeSig});
-   if(idx.co[m]!=null)mktW.push({w:.35,s:sentSigA});
+   if(idx.co[m]!=null)mktW.push({w:.35,s:sentSig});
    const mWT=mktW.reduce((a,b)=>a+b.w,0);let mktScore=mWT>0?mktW.reduce((a,b)=>a+b.w*b.s,0)/mWT:null;
-   if(btBearA&&mktScore!=null)mktScore+=0.3;
-   /* Composite market signal for B */
-   let mktScoreB=null;
-   if(mWT>0){const bW=[];
-    if(idx.vx[m]!=null)bW.push({w:.40,s:vxSig});
-    if(cI[m]!=null)bW.push({w:.25,s:capeSig});
-    if(idx.co[m]!=null)bW.push({w:.35,s:sentSigB});
-    const bWT=bW.reduce((a,b)=>a+b.w,0);mktScoreB=bWT>0?bW.reduce((a,b)=>a+b.w*b.s,0)/bWT:null;
-    if(btBearB&&mktScoreB!=null)mktScoreB+=0.3}
+   if(btBear&&mktScore!=null)mktScore+=0.3;
    /* Compute recession score BEFORE override (needed for proportional scaling) */
    let rec=null;if(aL!=null&&aC!=null)rec=aL*.75+aC*.25;else if(aL!=null)rec=aL;
    const btRecScore=rec||0;const btOvrScale=Math.max(0,1-btRecScore/80);
-   /* Override logic for A — proportional to recession score */
+   /* Override logic — proportional to recession score */
    if(mktScore!=null){const ext=mktW.filter(x=>Math.abs(x.s)===3);
     const sb=ext.filter(x=>x.s===-3),ss=ext.filter(x=>x.s===3);
     if(sb.length&&!ss.length&&mktScore<=0)mktScore=Math.min(mktScore,-2.5*btOvrScale);
     if(ss.length&&!sb.length&&mktScore>=0)mktScore=Math.max(mktScore,2.5*btOvrScale)}
-   /* Override logic for B — same scaling */
-   if(mktScoreB!=null){const extB=mktW.filter(x=>Math.abs(x.s)===3);
-    const sbB=extB.filter(x=>x.s===-3),ssB=extB.filter(x=>x.s===3);
-    if(sbB.length&&!ssB.length&&mktScoreB<=0)mktScoreB=Math.min(mktScoreB,-2.5*btOvrScale);
-    if(ssB.length&&!sbB.length&&mktScoreB>=0)mktScoreB=Math.max(mktScoreB,2.5*btOvrScale)}
    /* Market score 0-100 for chart */
    const mktPct=mktScore!=null?clamp((mktScore+3)/6*100):null;
    const mktP=[];if(indS.vx!=null)mktP.push({w:.40,s:indS.vx});if(indS.cape!=null)mktP.push({w:.25,s:indS.cape});if(indS.co!=null)mktP.push({w:.35,s:indS.co});
    const mT=mktP.reduce((a,b)=>a+b.w,0);const aM=mT>0?mktP.reduce((a,b)=>a+b.w*b.s,0)/mT:null;
-   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,mktSignalB:mktScoreB,recession:idx.rec[m]===1,spx:idx.spx[m]||null,bearRegime:btBear,bearRegimeB:btBearB,...indS})}
+   comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,recession:idx.rec[m]===1,spx:idx.spx[m]||null,bearRegime:btBear,...indS})}
   const data=comp.filter(c=>c.score!=null);
   st.bt.data=data;
   /* === COMPREHENSIVE BACKTEST STATS === */
@@ -518,30 +495,7 @@ function calcBacktestStats(data){
  if(inBear){const startSpx=data[bStart].spx;
   stats.bearRegime.periods.push({start:data[bStart].month,end:data[data.length-1].month,months:data.length-bStart,drawdown:"-",
    signals:{sell:data.slice(bStart).filter(d=>d.mktSignal>=0.5).length,hold:data.slice(bStart).filter(d=>d.mktSignal>-0.5&&d.mktSignal<0.5).length,buy:data.slice(bStart).filter(d=>d.mktSignal<=-0.5).length}})}
- /* 7. BEAR REGIME A/B COMPARISON */
- stats.bearAB={};
- ['A','B'].forEach(label=>{
-  const bearKey=label==='A'?'bearRegime':'bearRegimeB';
-  const sigKey=label==='A'?'mktSignal':'mktSignalB';
-  const bearMo=data.filter(d=>d[bearKey]);
-  const distBear={buy:0,hold:0,sell:0};
-  bearMo.forEach(d=>{if(d[sigKey]==null)return;if(d[sigKey]<=-0.5)distBear.buy++;else if(d[sigKey]>=0.5)distBear.sell++;else distBear.hold++});
-  const bearRets=[],normalRets=[];
-  for(let i=0;i<data.length-6;i++){const d=data[i];if(d.spx==null)continue;const fwd=data[i+6];if(!fwd||fwd.spx==null)continue;
-   const ret=(fwd.spx-d.spx)/d.spx*100;if(d[bearKey])bearRets.push(ret);else normalRets.push(ret)}
-  const buyRets=[],sellRets=[],holdRets=[];
-  for(let i=0;i<data.length-6;i++){const d=data[i];if(d[sigKey]==null||d.spx==null)continue;const fwd=data[i+6];if(!fwd||fwd.spx==null)continue;
-   const ret=(fwd.spx-d.spx)/d.spx*100;if(d[sigKey]<=-0.5)buyRets.push(ret);else if(d[sigKey]>=0.5)sellRets.push(ret);else holdRets.push(ret)}
-  const y2022=data.filter(d=>d.month>='2022-01'&&d.month<='2022-12').map(d=>({month:d.month,bear:d[bearKey],signal:d[sigKey]!=null?d[sigKey].toFixed(2):null,label:d[sigKey]!=null?sigLevel(Math.round(d[sigKey])).short:'-',spx:d.spx}));
-  const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:null;
-  stats.bearAB[label]={
-   name:label==='A'?'Current (10mo MA + 7% DD)':'Death Cross (12mo < 46mo SMA)',short:label==='A'?'A: MA+DD':'B: Death Cross',
-   totalBear:bearMo.length,distBear,
-   bearAvg6:avg(bearRets),normalAvg6:avg(normalRets),
-   buyAvg6:avg(buyRets),sellAvg6:avg(sellRets),holdAvg6:avg(holdRets),
-   buyN:buyRets.length,sellN:sellRets.length,holdN:holdRets.length,
-   separation:avg(buyRets)!=null&&avg(sellRets)!=null?avg(buyRets)-avg(sellRets):null,
-   y2022}});
+ /* Death Cross A/B comparison removed in v17.1 — confirmed no value */
  return stats}
 
 /* CSV file loading for S&P backfill — handles FRED, Yahoo, Shiller, and generic formats */
@@ -606,9 +560,9 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). ECY-adjusted CAPE with 3 inflation/rate gates. Credit spread velocity bonus. Proportional VIX override.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.1 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). ECY-adjusted CAPE. Credit velocity bonus. Proportional override. AAII + EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
- const comp=calcComposite();const strat=getStrategy();const ms=calcMarketSignal();const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
+ const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
  const recCol=comp.recession!=null?(comp.recession>80?"var(--st)":comp.recession>60?"var(--wn)":comp.recession>35?"var(--ca)":"var(--cl)"):"var(--wa)";
  const bonuses=[];if(comp.postInvBonus)bonuses.push("YC post-inv +15");if(comp.interactionBonus)bonuses.push("YC×Credit +10");if(st.crVelocity&&st.crVelocity.bonus)bonuses.push(`Credit velocity +15 (${st.crVelocity.velocity.toFixed(2)}pp)`);
@@ -632,13 +586,14 @@ function render(){const a=document.getElementById("app");
   <div class="msp-gauge"><div class="msp-needle" style="left:${np}%"></div></div><div class="msp-labels"><span>Str Buy</span><span>Buy</span><span>Soft Buy</span><span>Hold</span><span>Soft Sell</span><span>Sell</span><span>Str Sell</span></div>
   ${ms.override?`<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.1)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};border:1px solid ${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.25)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.25)":"rgba(255,23,68,.25)"}"><div class="m" style="font-size:9px;font-weight:700;color:${ms.override.type==="CONFLICTED"?"var(--ca)":ms.override.type==="OVERRIDE_BUY"?"var(--cl)":"var(--st)"}">${ms.override.type==="CONFLICTED"?"⚠ CONFLICTING":"⚡ OVERRIDE"}</div><div style="font-size:11px;color:var(--t2)">${ms.override.note}</div></div>`:""}
   <div class="msp-ind">
-   ${[{n:"VIX",sig:ms.signals.vix,w:"40%",inC:true},{n:"CAPE",sig:ms.signals.cape,w:"25%",inC:true},{n:"Sentiment",sig:ms.signals.sentiment,w:"35%",inC:true},{n:"EPU",sig:ms.signals.epu,w:"REF",inC:false}].map(item=>{const sl=sigLevel(item.sig.score);return`<div class="msp-ind-card" style="border-color:${sl.color}30;${!item.inC?"opacity:.5":""}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">${item.n} <span style="color:var(--t5)">${item.w}</span></span><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">${item.sig.note}${item.sig.mom===false?' <span style="color:var(--wn)">⚠ below 10mo MA</span>':item.sig.mom===true?' <span style="color:var(--cl)">✓ above 10mo MA</span>':""}${!item.inC?' <span style="color:var(--t5)">(display only)</span>':""}</div></div>`}).join("")}
-  </div>
-  ${mom.abvMA!=null?`<div style="margin-top:10px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div class="m" style="font-size:8px;color:var(--t4);margin-bottom:4px">MOMENTUM GATE + BEAR REGIME</div><div style="display:flex;gap:12px;flex-wrap:wrap"><div class="m" style="font-size:10px;color:${mom.abvMA?"var(--cl)":"var(--st)"}">S&P ${mom.current} ${mom.abvMA?"above":"below"} 10mo MA (${mom.ma})</div><div class="m" style="font-size:10px;font-weight:700;color:${mom.abvMA?"var(--cl)":"var(--st)"}">Gate: ${mom.abvMA?"OPEN ✓":"CLOSED ✗"}</div></div>${mom.drawdown!=null?`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px"><div class="m" style="font-size:10px;color:var(--t3)">Drawdown: <span style="color:${parseFloat(mom.drawdown)<-15?"var(--st)":parseFloat(mom.drawdown)<-7?"var(--wn)":parseFloat(mom.drawdown)<-3?"var(--ca)":"var(--cl)"}">${mom.drawdown}%</span> from 12mo high (${mom.high12})</div><div class="m" style="font-size:10px;font-weight:700;color:${mom.bearRegime?"var(--st)":"var(--cl)"}">${mom.bearRegime?"BEAR REGIME ⚠":"Normal"}</div></div>`:""} ${mom.bearRegime&&ms.bearDamp?`<div style="margin-top:6px;padding:6px 8px;background:rgba(255,23,68,.08);border-radius:4px;border:1px solid rgba(255,23,68,.15)"><div class="m" style="font-size:9px;color:var(--st);font-weight:700">Sentiment dampened: ${ms.bearDamp.orig} → ${ms.bearDamp.damped} · Bearish tilt +0.3</div><div class="m" style="font-size:8px;color:var(--t4);margin-top:2px">Consumer pessimism during downtrend isn't contrarian — it's correct</div></div>`:""}</div>`:""}</div>
+   ${[{n:"VIX",sig:ms.signals.vix,w:"40%",inC:true},{n:"CAPE",sig:ms.signals.cape,w:"25%",inC:true},{n:"Sentiment",sig:ms.signals.sentiment,w:"35%",inC:true}].map(item=>{const sl=sigLevel(item.sig.score);return`<div class="msp-ind-card" style="border-color:${sl.color}30"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">${item.n} <span style="color:var(--t5)">${item.w}</span></span><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">${item.sig.note}${item.sig.mom===false?' <span style="color:var(--wn)">⚠ below 10mo MA</span>':item.sig.mom===true?' <span style="color:var(--cl)">✓ above 10mo MA</span>':""}</div></div>`}).join("")}
+   ${mom.abvMA!=null?`<div class="msp-ind-card" style="border-color:${mom.bearRegime?'var(--st)30':'var(--cl)30'}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">Regime <span style="color:var(--t5)">GATE</span></span><span class="m" style="font-size:10px;font-weight:800;color:${mom.bearRegime?'var(--st)':'var(--cl)'}">${mom.bearRegime?'BEAR ⚠':'NORMAL'}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">S&P ${mom.current} ${mom.abvMA?'above':'below'} 10mo MA (${mom.ma})<span style="color:${mom.abvMA?'var(--cl)':'var(--wn)'}"> · Gate ${mom.abvMA?'OPEN ✓':'CLOSED ✗'}</span></div>${mom.drawdown!=null?`<div style="font-size:9px;color:var(--t4);margin-top:4px">${mom.drawdown}% from 12mo high${mom.bearRegime?' · Sent dampened · +0.3 tilt':''}</div>`:''}</div>`:''}
+  </div></div>
  ${(()=>{
-  /* AAII Investor Sentiment + Market Breadth panel */
-  const aa=st.aaii,br=st.breadth;
-  if(!aa&&!br)return"";
+  /* AAII Investor Sentiment + EPU Reference panel */
+  const aa=st.aaii;
+  const epuObs=st.d.epu||[];const epuVal=epuObs.length?parseFloat(epuObs[epuObs.length-1].value):null;
+  if(!aa&&epuVal==null)return"";
   let h='<div class="aaii-breadth" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">';
   if(aa){const spread=parseFloat(aa.spread);const spC=spread>20?"var(--cl)":spread>0?"var(--ca)":spread>-20?"var(--wn)":"var(--st)";
    const bullC=aa.bull>50?"var(--cl)":aa.bull>35?"var(--ca)":"var(--st)";const bearC=aa.bear>50?"var(--st)":aa.bear>35?"var(--wn)":"var(--cl)";
@@ -660,25 +615,23 @@ function render(){const a=document.getElementById("app");
     </div>
     <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div style="font-size:10px;color:#888;line-height:1.6">Weekly survey of individual investors (not institutions). Members report whether they are bullish, bearish, or neutral on the stock market over the next 6 months. Extreme readings are contrarian — when bears exceed 50%, forward 6-month returns have historically averaged +15%. When bulls exceed 60%, returns drop to ~+2%.</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="m" style="font-size:8px;color:var(--t5)">Display only — not in composite. Supplements UMich consumer sentiment.</span><a href="https://www.aaii.com/sentimentsurvey/sent_results" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">aaii.com/sentimentsurvey →</a></div></div>
    </div>`}
-  if(br){const pct=br.pct;const bC=pct>70?"var(--cl)":pct>50?"var(--ca)":pct>30?"var(--wn)":"var(--st)";
-   const bLabel=pct>70?"Strong trend":pct>50?"Healthy":pct>30?"Weakening":"Deteriorating";
+  /* EPU Reference card */
+  if(epuVal!=null){const epuZ=((epuVal-110)/50);const epuC=epuZ>3?'var(--st)':epuZ>1.5?'var(--wn)':epuZ>1?'var(--ca)':'var(--t3)';
+   const epuLabel=epuVal>300?'Crisis':epuVal>200?'Major':epuVal>150?'Elevated':'Normal';
    h+=`<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">MARKET HEALTH</span><span class="m" style="font-size:8px;color:var(--t4)">S&P 500</span></div>
-    <div style="margin-bottom:8px"><span class="m" style="font-size:28px;font-weight:800;color:${bC}">${pct}</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">/ 100</span></div>
-    <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.05);overflow:hidden;margin-bottom:8px"><div style="width:${pct}%;height:100%;border-radius:4px;background:${bC};opacity:.7"></div></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">POLICY UNCERTAINTY</span><span class="m" style="font-size:8px;color:var(--t4)">Daily</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"><div><span class="m" style="font-size:22px;font-weight:800;color:${epuC}">${epuVal.toFixed(0)}</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">EPU</span></div><div class="m" style="font-size:9px;font-weight:700;color:${epuC}">${epuLabel}</div></div>
     <div style="display:flex;gap:8px;margin-bottom:6px">
-     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">200d MA</div><div class="m" style="font-size:11px;font-weight:700;color:${br.abv200?"var(--cl)":"var(--st)"}">${br.abv200?"Above":"Below"}</div><div class="m" style="font-size:8px;color:var(--t5)">${br.ma200}</div></div>
-     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">50d MA</div><div class="m" style="font-size:11px;font-weight:700;color:${br.abv50?"var(--cl)":"var(--st)"}">${br.abv50?"Above":"Below"}</div><div class="m" style="font-size:8px;color:var(--t5)">${br.ma50}</div></div>
-     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">52wk High</div><div class="m" style="font-size:11px;font-weight:700;color:${parseFloat(br.fromHigh)>-5?"var(--cl)":parseFloat(br.fromHigh)>-10?"var(--ca)":"var(--st)"}">${br.fromHigh}%</div></div>
+     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:6px 8px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">Z-SCORE</div><div class="m" style="font-size:14px;font-weight:800;color:${epuC}">${epuZ.toFixed(2)}σ</div></div>
+     <div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:6px 8px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">BASELINE</div><div class="m" style="font-size:14px;font-weight:800;color:var(--t3)">110</div></div>
     </div>
-    <div style="display:flex;justify-content:space-between;align-items:center"><span class="m" style="font-size:10px;font-weight:700;color:${bC}">${bLabel}</span><span class="m" style="font-size:8px;color:var(--t5)">${br.source}</span></div>
-    <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">Below both MAs = slow bear risk (2022-type)</div>
+    <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div style="font-size:10px;color:#888;line-height:1.6">News-based economic policy uncertainty index. Backtest showed every EPU label change was wrong — high uncertainty is contrarian bullish (EPU&gt;200 averaged +18.7% fwd 6mo). Display only.</div>
+     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="m" style="font-size:8px;color:var(--t5)">Display only — removed from composite.</span><a href="https://fred.stlouisfed.org/series/USEPUINDXD" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">FRED →</a></div></div>
    </div>`}
-  else if(aa){/* fill second column if no breadth */
-   h+=`<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:center"><div class="m" style="font-size:9px;color:var(--t5);text-align:center">Market breadth unavailable</div></div>`}
+  else if(aa){h+=`<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:center"><div class="m" style="font-size:9px;color:var(--t5);text-align:center">EPU unavailable</div></div>`}
   h+='</div>';return h})()}
  ${(()=>{const ad=st.al;const saD=st.d.sa||[];const sv=saD.length?parseFloat(saD[saD.length-1].value):null;const both=ad.ycUD&&ad.sahmD,either=ad.ycUD||ad.sahmD;let bdr="rgba(144,164,174,.15)",bgc="rgba(144,164,174,.04)",ic="var(--wa)",ttl="PATTERN ANALYSIS";if(both){bdr="rgba(255,145,0,.2)";bgc="rgba(255,145,0,.05)";ic="var(--wn)";ttl="⚡ DUAL ALERT"}else if(either){bdr="rgba(255,193,7,.2)";bgc="rgba(255,193,7,.05)";ic="var(--ca)";ttl="PATTERN ALERT"}let ms2=[];if(ad.ycInv&&ad.ycUD){const mo=mAgo(ad.ycUD),rem=mo!=null?12-mo:null;ms2.push(`<strong style="color:var(--ca)">YC un-inverted ${fD(ad.ycUD)}</strong> (${mo} mo). ${rem!=null&&rem>0?`Window: ${rem} mo.`:"Passed."}`)}if(ad.sahmD)ms2.push(`<strong style="color:var(--ca)">Sahm ${fD(ad.sahmD)}</strong>. Now: ${sv!=null?sv.toFixed(2):"?"}.`);if(st.clfRatio!=null)ms2.push(`Claims/CLF: <strong>${st.clfRatio.toFixed(2)}</strong>`);if(both)ms2.push(`<span style="color:var(--wn)">Both fired — preceded every recession since 1970.</span>`);if(!ms2.length)ms2.push("No active alerts.");return`<div class="ab" style="background:${bgc};border:1px solid ${bdr}"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="font-size:13px">⚠</span><span class="m" style="font-size:10px;font-weight:700;color:${ic}">${ttl}</span></div>${ms2.map(m=>`<p style="font-size:12px;color:#999;line-height:1.6;margin-bottom:4px">${m}</p>`).join("")}</div>`})()}
- ${(()=>{let html=`<div class="mc-wrap"><div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-bottom:14px">MARKET CONTEXT</div>`;for(const g of MC_GROUPS){html+=`<div class="mc-group"><div class="mc-ghdr"><span style="font-size:12px">${g.icon}</span><span class="m" style="font-size:9px;color:var(--t4)">${g.label}</span></div><div class="mc-grid">`;for(const item of g.items){const d=st.mc[item.id]||[];const full=st.mcFull[item.id]||[];const lat=d.length?d[d.length-1]:null;const val=lat?parseFloat(lat.value):null;const prev=d.length>1?parseFloat(d[d.length-2].value):null;let dv="—";if(item.isYoY&&item.fmt)dv=item.fmt(val,full);else if(item.fmt&&val!=null)dv=item.fmt(val);else if(val!=null)dv=`${item.p||""}${val.toFixed(item.d)}${item.x||""}`;let chg=null,up=true;if(val!=null&&prev!=null&&!item.isYoY&&!item.fmt){chg=((val-prev)/prev*100).toFixed(2);up=parseFloat(chg)>=0}let pp=null,ppC="var(--t4)";if(item.pk&&full.length>10){pp=peakPct(full);if(pp!=null){const pv=parseFloat(pp);ppC=pv<=-15?"var(--st)":pv<=-10?"var(--wn)":pv<=-5?"var(--ca)":"var(--cl)"}}const dir=item.dir?item.dir(full):null;const dirC=!dir?null:(dir==="QE"||dir==="EXPANDING"||dir==="GROWTH"||dir==="RISING"||dir==="FALLING")?"var(--cl)":"var(--st)";const ex=st.mcEx[item.id];html+=`<div class="mc-card" data-mc="${item.id}"><div class="m" style="font-size:8px;color:var(--t4)">${item.n}${item.badge?` <span style="color:var(--wn);font-size:7px">${item.badge}</span>`:""}</div><div class="m" style="font-size:14px;font-weight:700;margin-top:3px">${dv}</div>${chg?`<div class="m" style="font-size:9px;color:${up?"var(--cl)":"var(--st)"};margin-top:2px">${up?"▲":"▼"} ${Math.abs(parseFloat(chg))}%</div>`:""}${pp!=null?`<div class="m" style="font-size:8px;color:${ppC};margin-top:1px">${parseFloat(pp)>=0?"At peak":pp+"% from peak"}</div>`:""}${dir?`<div class="mc-badge" style="background:${dirC==="var(--cl)"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};color:${dirC};margin-top:3px">${dir}</div>`:""}${ex?`<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--bd)"><div style="font-size:10px;color:#888;line-height:1.5">${item.desc||""}</div><p class="m" style="font-size:9px;color:var(--t5);margin-top:4px">FRED: ${item.f} · <a href="https://fred.stlouisfed.org/series/${item.f}" target="_blank">FRED →</a></p></div>`:""}<div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px"><a href="https://fred.stlouisfed.org/series/${item.f}" target="_blank" class="m" style="font-size:7px;color:var(--t5);text-decoration:none" onclick="event.stopPropagation()">${item.f} →</a><span class="m" style="font-size:9px;color:var(--t5)">${ex?"▲":"▼"}</span></div></div>`}html+=`</div></div>`}html+=`</div>`;return html})()}
+ ${(()=>{let html=`<div class="mc-wrap"><div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-bottom:14px">MARKET CONTEXT</div>`;for(const g of MC_GROUPS){html+=`<div class="mc-group"><div class="mc-ghdr"><span style="font-size:12px">${g.icon}</span><span class="m" style="font-size:9px;color:var(--t4)">${g.label}</span></div><div class="mc-grid">`;for(const item of g.items){const d=st.mc[item.id]||[];const full=st.mcFull[item.id]||[];const lat=d.length?d[d.length-1]:null;const val=lat?parseFloat(lat.value):null;const prev=d.length>1?parseFloat(d[d.length-2].value):null;let dv="—";if(item.isYoY&&item.fmt)dv=item.fmt(val,full);else if(item.fmt&&val!=null)dv=item.fmt(val);else if(val!=null)dv=`${item.p||""}${val.toFixed(item.d)}${item.x||""}`;let chg=null,up=true;if(val!=null&&prev!=null&&!item.isYoY&&!item.fmt){chg=((val-prev)/prev*100).toFixed(2);up=parseFloat(chg)>=0}let pp=null,ppC="var(--t4)";if(item.pk&&full.length>10){pp=peakPct(full);if(pp!=null){const pv=parseFloat(pp);ppC=pv<=-15?"var(--st)":pv<=-10?"var(--wn)":pv<=-5?"var(--ca)":"var(--cl)"}}const dir=item.dir?item.dir(full):null;const dirC=!dir?null:(dir==="QE"||dir==="EXPANDING"||dir==="GROWTH"||dir==="RISING"||dir==="FALLING")?"var(--cl)":"var(--st)";const ex=st.mcEx[item.id];html+=`<div class="mc-card" data-mc="${item.id}"><div class="m" style="font-size:8px;color:var(--t4)">${item.n}${item.badge?` <span style="color:var(--wn);font-size:7px">${item.badge}</span>`:""}</div><div class="m" style="font-size:14px;font-weight:700;margin-top:3px">${dv}</div>${chg?`<div class="m" style="font-size:9px;color:${up?"var(--cl)":"var(--st)"};margin-top:2px">${up?"▲":"▼"} ${Math.abs(parseFloat(chg))}%</div>`:""}${pp!=null?`<div class="m" style="font-size:8px;color:${ppC};margin-top:1px">${parseFloat(pp)>=0?"At peak":pp+"% from peak"}</div>`:""}${dir?`<div class="mc-badge" style="background:${dirC==="var(--cl)"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};color:${dirC};margin-top:3px">${dir}</div>`:""}${ex?`<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--bd)"><div style="font-size:10px;color:#888;line-height:1.5">${item.desc||""}</div>${item.id==='sp500'&&st.breadth?`<div style="display:flex;gap:8px;margin-top:8px;margin-bottom:6px"><div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">200d MA</div><div class="m" style="font-size:11px;font-weight:700;color:${st.breadth.abv200?'var(--cl)':'var(--st)'}">${st.breadth.abv200?'Above':'Below'}</div><div class="m" style="font-size:8px;color:var(--t5)">${st.breadth.ma200}</div></div><div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">50d MA</div><div class="m" style="font-size:11px;font-weight:700;color:${st.breadth.abv50?'var(--cl)':'var(--st)'}">${st.breadth.abv50?'Above':'Below'}</div><div class="m" style="font-size:8px;color:var(--t5)">${st.breadth.ma50}</div></div><div style="flex:1;background:rgba(0,0,0,.2);border-radius:4px;padding:5px 7px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">52wk High</div><div class="m" style="font-size:11px;font-weight:700;color:${parseFloat(st.breadth.fromHigh)>-5?'var(--cl)':parseFloat(st.breadth.fromHigh)>-10?'var(--ca)':'var(--st)'}">${st.breadth.fromHigh}%</div></div></div><div class="m" style="font-size:8px;color:var(--t5)">Below both MAs = slow bear risk (2022-type)</div>`:''}<p class="m" style="font-size:9px;color:var(--t5);margin-top:4px">FRED: ${item.f} · <a href="https://fred.stlouisfed.org/series/${item.f}" target="_blank">FRED →</a></p></div>`:""}<div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px"><a href="https://fred.stlouisfed.org/series/${item.f}" target="_blank" class="m" style="font-size:7px;color:var(--t5);text-decoration:none" onclick="event.stopPropagation()">${item.f} →</a><span class="m" style="font-size:9px;color:var(--t5)">${ex?"▲":"▼"}</span></div></div>`}html+=`</div></div>`}html+=`</div>`;return html})()}
  <div class="m" style="font-size:9px;color:var(--t4);letter-spacing:.1em;margin-bottom:10px">INDICATORS · TAP FOR DETAILS</div>
  ${["leading","confirming","market"].map(tier=>{const t=TIERS[tier];const items=S.filter(s=>s.tier===tier);return`<div style="margin-bottom:8px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><div style="width:3px;height:14px;border-radius:2px;background:${t.color}"></div><span class="m" style="font-size:10px;font-weight:700;color:${t.color}">${t.label}</span><span class="m" style="font-size:9px;color:var(--t4)">${t.desc}</span></div><div style="display:flex;flex-direction:column;gap:10px">${items.map(s=>{const d=st.d[s.k]||[],status=st.ss[s.k]||"unknown",cfg=ST[status]||ST.unknown;const show=d.slice(-24);const lat=d.length?d[d.length-1]:null;const val=lat?parseFloat(lat.value):null;const op=st.ex[s.k];
   let disp="—",sub="";if(s.isCape&&st.cape){disp=st.cape.toFixed(1);
@@ -754,31 +707,6 @@ function render(){const a=document.getElementById("app");
    ${s.bearRegime.periods.length?`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">BEAR REGIME PERIODS</div>
     <table style="width:100%;font-size:10px;border-collapse:collapse"><tr><th style="text-align:left;padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">PERIOD</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">MO</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">DRAW</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SELL</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">HOLD</th><th style="padding:3px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">BUY</th></tr>
     ${s.bearRegime.periods.map(p=>`<tr><td class="m" style="padding:3px 6px;color:var(--t2)">${p.start} → ${p.end}</td><td class="m" style="padding:3px 6px;text-align:center">${p.months}</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--st)">${p.drawdown}%</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--cl)">${p.signals.sell}</td><td class="m" style="padding:3px 6px;text-align:center;color:var(--ca)">${p.signals.hold}</td><td class="m" style="padding:3px 6px;text-align:center;color:${p.signals.buy>0?"var(--st)":"var(--t4)"}">${p.signals.buy}</td></tr>`).join("")}</table></div>`:""}`:""}
-   ${s.bearAB?`<div class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em;margin-top:20px;margin-bottom:12px">BEAR REGIME A/B COMPARISON</div>
-   <div class="db" style="margin-bottom:10px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-     ${['A','B'].map(k=>{const ab=s.bearAB[k];if(!ab)return'';const bdr=k==='A'?'rgba(255,193,7,.2)':'rgba(100,181,246,.2)';const col=k==='A'?'var(--ca)':'#64B5F6';return`
-     <div style="background:rgba(0,0,0,.15);border-radius:6px;padding:10px;border:1px solid ${bdr}">
-      <div class="m" style="font-size:9px;color:${col};font-weight:700;margin-bottom:8px">${ab.name}</div>
-      <div class="m" style="font-size:10px;color:var(--t2)">Bear months: <b>${ab.totalBear}</b></div>
-      <div class="m" style="font-size:10px;color:var(--st)">Bear avg 6mo: ${ab.bearAvg6!=null?ab.bearAvg6.toFixed(1)+'%':'-'}</div>
-      <div class="m" style="font-size:10px;color:var(--cl)">Normal avg 6mo: ${ab.normalAvg6!=null?ab.normalAvg6.toFixed(1)+'%':'-'}</div>
-      <div class="m" style="font-size:9px;color:var(--t4);margin-top:6px">In bear → Sell: ${ab.distBear.sell} · Hold: ${ab.distBear.hold} · Buy: ${ab.distBear.buy}</div>
-     </div>`}).join('')}
-    </div>
-    <div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">BUY/SELL SEPARATION — ALL MONTHS, 6mo forward</div>
-    <table style="width:100%;font-size:10px;border-collapse:collapse">
-     <tr><th style="text-align:left;padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">APPROACH</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">BUY AVG</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">N</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SELL AVG</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">N</th><th style="padding:4px 6px;color:var(--t4);font-size:8px;border-bottom:1px solid var(--bd)">SEP</th></tr>
-     ${['A','B'].map(k=>{const ab=s.bearAB[k];if(!ab)return'';const best=s.bearAB.A&&s.bearAB.B&&ab.separation!=null&&((k==='A'&&ab.separation>=s.bearAB.B.separation)||(k==='B'&&ab.separation>s.bearAB.A.separation));return`
-     <tr style="${best?'background:rgba(0,230,118,.06)':''}"><td class="m" style="padding:4px 6px;color:${k==='A'?'var(--ca)':'#64B5F6'};font-weight:700">${ab.short}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--cl)">${ab.buyAvg6!=null?'+'+ab.buyAvg6.toFixed(1)+'%':'-'}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--t4)">${ab.buyN}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--wn)">${ab.sellAvg6!=null?'+'+ab.sellAvg6.toFixed(1)+'%':'-'}</td><td class="m" style="padding:4px 6px;text-align:center;color:var(--t4)">${ab.sellN}</td><td class="m" style="padding:4px 6px;text-align:center;font-weight:700;color:${best?'var(--cl)':'var(--t2)'}">${ab.separation!=null?(ab.separation>0?'+':'')+ab.separation.toFixed(1)+'pp':'-'}</td></tr>`}).join('')}
-    </table>
-    <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">Higher separation = better. Green row = winner. Separation = buy avg − sell avg (6mo forward returns).</div>
-    ${s.bearAB.A&&s.bearAB.A.y2022.length?`<div class="m" style="font-size:9px;color:var(--t4);margin-top:12px;margin-bottom:6px">2022 MONTHLY DETAIL (slow bear test case)</div>
-    <div style="max-height:220px;overflow-y:auto"><table style="width:100%;font-size:9px;border-collapse:collapse">
-     <tr><th style="text-align:left;padding:3px 5px;color:var(--t4);font-size:7px;border-bottom:1px solid var(--bd)">MONTH</th><th style="padding:3px 5px;color:var(--t4);font-size:7px;border-bottom:1px solid var(--bd)">S&P</th><th style="padding:3px 5px;color:var(--ca);font-size:7px;border-bottom:1px solid var(--bd)">A BEAR</th><th style="padding:3px 5px;color:var(--ca);font-size:7px;border-bottom:1px solid var(--bd)">A SIG</th><th style="padding:3px 5px;color:#64B5F6;font-size:7px;border-bottom:1px solid var(--bd)">B BEAR</th><th style="padding:3px 5px;color:#64B5F6;font-size:7px;border-bottom:1px solid var(--bd)">B SIG</th></tr>
-     ${s.bearAB.A.y2022.map((a,i)=>{const b=s.bearAB.B.y2022[i]||{};return`<tr><td class="m" style="padding:3px 5px;color:var(--t3)">${a.month}</td><td class="m" style="padding:3px 5px;text-align:center">${a.spx!=null?a.spx.toLocaleString(undefined,{maximumFractionDigits:0}):'-'}</td><td class="m" style="padding:3px 5px;text-align:center;color:${a.bear?'var(--st)':'var(--t5)'}">${a.bear?'YES':'-'}</td><td class="m" style="padding:3px 5px;text-align:center;color:${a.signal<=-0.5?'var(--cl)':a.signal>=0.5?'var(--st)':'var(--t3)'}"><b>${a.label}</b></td><td class="m" style="padding:3px 5px;text-align:center;color:${b.bear?'var(--st)':'var(--t5)'}">${b.bear?'YES':'-'}</td><td class="m" style="padding:3px 5px;text-align:center;color:${b.signal<=-0.5?'var(--cl)':b.signal>=0.5?'var(--st)':'var(--t3)'}"><b>${b.label||'-'}</b></td></tr>`}).join('')}
-    </table></div>
-    <div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">A = below 10mo MA + &gt;7% drawdown. B = 12mo SMA &lt; 46mo SMA (death cross ~50wk/200wk). Goal: generate SELL during 2022 -25% grind.</div>`:''}</div>`:''}
   </div>`})()}
  `:`<div style="margin-bottom:10px"><button onclick="loadBacktest()" class="m" style="width:100%;padding:12px;background:rgba(255,193,7,.1);border:1px solid rgba(255,193,7,.2);border-radius:8px;color:var(--ca);font-size:11px;font-weight:700;cursor:pointer">LOAD BACKTEST</button></div>
   <div style="padding:10px 14px;background:rgba(0,0,0,.15);border-radius:8px;border:1px solid var(--bd)">
@@ -790,7 +718,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v17</strong>: ECY+gates CAPE softener (DFII10), credit spread velocity +15 bonus, proportional VIX override (scaled by recession score).<br>
+ <strong style="color:var(--t4)">v17.1</strong>: Perf fixes, death cross removed, EPU → reference panel, Market Health → S&P context card.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
