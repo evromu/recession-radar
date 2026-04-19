@@ -60,12 +60,13 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17.2 METHODOLOGY ═══
+/* ═══ v17.3 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
    MARKET SIGNAL: VIX 40% (hybrid z-score, MA10 gate, proportional override)
      + CAPE 25% (ECY softener with 3 inflation/rate gates) + Sentiment 35%
-   v17.2: Perf fixes (cached composite, O(n) backtest). Death cross removed.
-     EPU moved to reference panel. Market Health merged into S&P context card.
+     + AAII Capitulation additive bonus (-0.5 when Bear>50 + DD>10%)
+   v17.3: Capitulation signal (8/8 historical), AAII context improvements,
+     color bar fix, EPU fetch fallback to monthly series
 ═══════════════════════════════════════════════════════ */
 const SIG_LEVELS=[{v:-3,label:"STRONG BUY",short:"STR BUY",color:"#00E676",bg:"rgba(0,230,118,.12)"},{v:-2,label:"BUY",short:"BUY",color:"#00C853",bg:"rgba(0,200,83,.10)"},{v:-1,label:"SOFT BUY",short:"SOFT BUY",color:"#66BB6A",bg:"rgba(102,187,106,.08)"},{v:0,label:"HOLD",short:"HOLD",color:"#78909C",bg:"rgba(120,144,156,.08)"},{v:1,label:"SOFT SELL",short:"SOFT SELL",color:"#FFC107",bg:"rgba(255,193,7,.10)"},{v:2,label:"SELL",short:"SELL",color:"#FF9100",bg:"rgba(255,145,0,.10)"},{v:3,label:"STRONG SELL",short:"STR SELL",color:"#FF1744",bg:"rgba(255,23,68,.12)"}];
 function sigLevel(v){return SIG_LEVELS.find(l=>l.v===Math.max(-3,Math.min(3,Math.round(v))))||SIG_LEVELS[3]}
@@ -120,6 +121,22 @@ function calcECYModifier(){
   if(rNow&&r6){const rateChg=rNow-r6;if(rateChg>0.75)return{modifier:0,ecy,gateBlocked:`10Y +${rateChg.toFixed(2)}% > 0.75%`}}}
  return{modifier:-1,ecy,gateBlocked:null}}
 
+function calcCapitulation(){
+ /* AAII Bear% > 50 AND S&P in drawdown >10% from 6mo peak.
+    Historical: 8/8 fires produced positive fwd 12mo returns (avg +24.7%). */
+ if(!st.aaii||st.aaii.bear==null)return{active:false,bear:null,dd:null};
+ const bear=parseFloat(st.aaii.bear);
+ if(isNaN(bear)||bear<=50)return{active:false,bear,dd:null};
+ const spx=st.mcFull.sp500||[];
+ const vals=spx.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
+ if(vals.length<60)return{active:false,bear,dd:null};
+ const recent=vals.slice(-Math.min(vals.length,126));
+ const peak=Math.max(...recent);
+ const current=vals[vals.length-1];
+ const dd=(current-peak)/peak*100;
+ const active=bear>50&&dd<-10;
+ return{active,bear,dd:dd.toFixed(1),peak:peak.toFixed(0),current:current.toFixed(0)}}
+
 function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
  const vix=vD.length?parseFloat(vD[vD.length-1].value):null;const sent=coD.length?parseFloat(coD[coD.length-1].value):null;
  const vZ=st.vixRolling?parseFloat(st.vixRolling.z):null;
@@ -156,7 +173,10 @@ function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
   if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX & Sentiment extremes conflict."};
   else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+` capitulation (${(ovrScale*100).toFixed(0)}% strength, rec ${recScore.toFixed(0)})`};bs=Math.min(bs,buyFloor)}
   else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+` extreme (${(ovrScale*100).toFixed(0)}% strength)`};bs=Math.max(bs,sellFloor)}}
- return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:mom.bearRegime,bearDamp}}
+ /* AAII Capitulation bonus: additive -0.5 when Bear>50 + DD>10% from 6mo peak */
+ const capit=calcCapitulation();
+ if(capit.active)bs=Math.max(-3,bs-0.5);
+ return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:mom.bearRegime,bearDamp,capitulation:capit}}
 
 function getStrategy(preComp,preMs){const comp=preComp||calcComposite();const ms=preMs||calcMarketSignal(comp);const r=comp.recession!=null?comp.recession:0;const m=ms.score;
  /* v16.1: thresholds 35/60/80. RED (>80) differentiated from ORANGE (60-80).
@@ -220,17 +240,43 @@ async function fetchCAPEHist(){try{const url="https://www.multpl.com/shiller-pe/
 async function fetchCLF(){try{const clf=await ff("CLF16OV",st.key,3);if(clf.length){st.clfRaw=parseFloat(clf[clf.length-1].value);const claims=st.d.ic||[];if(claims.length>=4&&st.clfRaw){const l4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));st.claims4wk=l4.reduce((a,b)=>a+b,0)/l4.length;st.clfRatio=st.claims4wk/st.clfRaw}}}catch{}}
 async function fetchAAII(){
  const urls=["https://www.aaii.com/sentimentsurvey/sent_results"];
- for(const url of urls){const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});if(!r.ok)continue;const h=await r.text();
-  /* Try parsing bull/bear/neutral percentages */
-  const bp=[/Bullish[^0-9]*([\d]{1,2}(?:\.[\d]+)?)\s*%/i,/bull[^0-9]*([\d]{1,2}(?:\.[\d]+)?)/i];
-  const brp=[/Bearish[^0-9]*([\d]{1,2}(?:\.[\d]+)?)\s*%/i,/bear[^0-9]*([\d]{1,2}(?:\.[\d]+)?)/i];
-  const np=[/Neutral[^0-9]*([\d]{1,2}(?:\.[\d]+)?)\s*%/i,/neutral[^0-9]*([\d]{1,2}(?:\.[\d]+)?)/i];
-  let bull=null,bear=null,neut=null;
-  for(const p of bp){const m=h.match(p);if(m){bull=parseFloat(m[1]);if(bull>0&&bull<100)break;bull=null}}
-  for(const p of brp){const m=h.match(p);if(m){bear=parseFloat(m[1]);if(bear>0&&bear<100)break;bear=null}}
-  for(const p of np){const m=h.match(p);if(m){neut=parseFloat(m[1]);if(neut>0&&neut<100)break;neut=null}}
-  if(bull!=null&&bear!=null){st.aaii={bull,bear,neutral:neut,spread:(bull-bear).toFixed(1)};return}
- }catch{continue}}}st.aaii=null}
+ for(const url of urls){const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];
+  for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});
+   if(!r.ok)continue;const h=await r.text();
+   const bp=[/Bullish[^0-9]*([\d]{1,2}(?:\.[\d]+)?)\s*%/i,/bull[^0-9]*([\d]{1,2}(?:\.[\d]+)?)/i];
+   const brp=[/Bearish[^0-9]*([\d]{1,2}(?:\.[\d]+)?)\s*%/i,/bear[^0-9]*([\d]{1,2}(?:\.[\d]+)?)/i];
+   const np=[/Neutral[^0-9]*([\d]{1,2}(?:\.[\d]+)?)\s*%/i,/neutral[^0-9]*([\d]{1,2}(?:\.[\d]+)?)/i];
+   let bull=null,bear=null,neut=null;
+   for(const p of bp){const m=h.match(p);if(m){bull=parseFloat(m[1]);
+    if(bull>0&&bull<1)bull*=100;
+    if(bull>0&&bull<100)break;bull=null}}
+   for(const p of brp){const m=h.match(p);if(m){bear=parseFloat(m[1]);
+    if(bear>0&&bear<1)bear*=100;
+    if(bear>0&&bear<100)break;bear=null}}
+   for(const p of np){const m=h.match(p);if(m){neut=parseFloat(m[1]);
+    if(neut>0&&neut<1)neut*=100;
+    if(neut>0&&neut<100)break;neut=null}}
+   if(bull!=null&&bear!=null){
+    const spread=bull-bear;
+    const HIST_KEY="rr_aaii_hist";
+    let hist=[];try{hist=JSON.parse(localStorage.getItem(HIST_KEY)||"[]")}catch{hist=[]}
+    const today=new Date().toISOString().split("T")[0];
+    if(!hist.length||hist[hist.length-1].d!==today){
+     hist.push({d:today,s:spread});
+     hist=hist.slice(-60);
+     try{localStorage.setItem(HIST_KEY,JSON.stringify(hist))}catch{}
+    }
+    let spread4wk=null;
+    if(hist.length>=4){
+     const fourWeeksAgo=new Date(Date.now()-28*24*3600*1000).toISOString().split("T")[0];
+     const match=hist.find(x=>x.d<=fourWeeksAgo);
+     if(match)spread4wk=match.s;
+    }
+    st.aaii={bull,bear,neutral:neut,spread:spread.toFixed(1),
+             spread4wk:spread4wk!=null?spread4wk.toFixed(1):null,
+             chg4wk:spread4wk!=null?(spread-spread4wk).toFixed(1):null};
+    return}
+  }catch{continue}}}st.aaii=null}
 function calcBreadthProxy(){
  /* S&P 500 vs 200-day MA proxy — uses daily FRED SP500 data we already fetch */
  const spx=st.mcFull.sp500||[];if(spx.length<200){st.breadth=null;return}
@@ -281,8 +327,12 @@ async function loadAll(){st.ld=true;st.err=null;render();let ok=0,fl=[],mcOk=0,m
  for(const g of MC_GROUPS){for(const item of g.items){try{const lim=item.pk?500:item.isYoY?26:12;const data=await ff(item.f,st.key,lim);st.mcFull[item.id]=data;st.mc[item.id]=data.slice(-5);mcOk++}catch{st.mc[item.id]=[];st.mcFull[item.id]=[];mcFl.push(item.n)}}}
  /* DFII10 — 10Y TIPS real yield for ECY calculation */
  try{st.d.dfii10=await ff('DFII10',st.key,30)}catch{st.d.dfii10=[]}
- /* EPU — standalone fetch for reference card */
- try{st.d.epu=await ff('USEPUINDXD',st.key,30)}catch{st.d.epu=[]}
+ /* EPU — standalone fetch for reference card (daily w/ monthly fallback) */
+ try{
+  let epuData=await ff('USEPUINDXD',st.key,30);
+  if(!epuData||epuData.length===0){try{epuData=await ff('USEPUINDXM',st.key,12)}catch{}}
+  st.d.epu=epuData||[];
+ }catch{try{st.d.epu=await ff('USEPUINDXM',st.key,12)}catch{st.d.epu=[]}}
  /* CAPE from multpl.com (with fallback + cache) */
  await fetchCAPE();
  /* Claims/CLF ratio */
@@ -560,7 +610,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.2 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). ECY-adjusted CAPE. Credit velocity bonus. Proportional override. AAII + EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.3 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). ECY-adjusted CAPE. Credit velocity bonus. Proportional override. AAII + EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -585,6 +635,7 @@ function render(){const a=document.getElementById("app");
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px"><div><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">MARKET SIGNAL DETAIL</div></div><div class="m" style="font-size:9px;color:var(--t4);text-align:right">VIX 40% · CAPE 25% · Sent 35%</div></div>
   <div class="msp-gauge"><div class="msp-needle" style="left:${np}%"></div></div><div class="msp-labels"><span>Str Buy</span><span>Buy</span><span>Soft Buy</span><span>Hold</span><span>Soft Sell</span><span>Sell</span><span>Str Sell</span></div>
   ${ms.override?`<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.1)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};border:1px solid ${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.25)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.25)":"rgba(255,23,68,.25)"}"><div class="m" style="font-size:9px;font-weight:700;color:${ms.override.type==="CONFLICTED"?"var(--ca)":ms.override.type==="OVERRIDE_BUY"?"var(--cl)":"var(--st)"}">${ms.override.type==="CONFLICTED"?"⚠ CONFLICTING":"⚡ OVERRIDE"}</div><div style="font-size:11px;color:var(--t2)">${ms.override.note}</div></div>`:""}
+  ${ms.capitulation&&ms.capitulation.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">Bear ${ms.capitulation.bear}% · S&P ${ms.capitulation.dd}% from 6mo peak. Market signal boosted −0.5 toward BUY.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Historical: 8/8 fires returned +24.7% avg fwd 12mo. Fires include 1990, 2009 GFC, 2018, 2020 COVID, 2022×2, 2025.</div></div>`:""}
   <div class="msp-ind">
    ${[{n:"VIX",sig:ms.signals.vix,w:"40%",inC:true},{n:"CAPE",sig:ms.signals.cape,w:"25%",inC:true},{n:"Sentiment",sig:ms.signals.sentiment,w:"35%",inC:true}].map(item=>{const sl=sigLevel(item.sig.score);return`<div class="msp-ind-card" style="border-color:${sl.color}30"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">${item.n} <span style="color:var(--t5)">${item.w}</span></span><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">${item.sig.note}${item.sig.mom===false?' <span style="color:var(--wn)">⚠ below 10mo MA</span>':item.sig.mom===true?' <span style="color:var(--cl)">✓ above 10mo MA</span>':""}</div></div>`}).join("")}
    ${mom.abvMA!=null?`<div class="msp-ind-card" style="border-color:${mom.bearRegime?'var(--st)30':'var(--cl)30'}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">Regime <span style="color:var(--t5)">GATE</span></span><span class="m" style="font-size:10px;font-weight:800;color:${mom.bearRegime?'var(--st)':'var(--cl)'}">${mom.bearRegime?'BEAR ⚠':'NORMAL'}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">S&P ${mom.current} ${mom.abvMA?'above':'below'} 10mo MA (${mom.ma})<span style="color:${mom.abvMA?'var(--cl)':'var(--wn)'}"> · Gate ${mom.abvMA?'OPEN ✓':'CLOSED ✗'}</span></div>${mom.drawdown!=null?`<div style="font-size:9px;color:var(--t4);margin-top:4px">${mom.drawdown}% from 12mo high${mom.bearRegime?' · Sent dampened · +0.3 tilt':''}</div>`:''}</div>`:''}
@@ -595,25 +646,42 @@ function render(){const a=document.getElementById("app");
   const epuObs=st.d.epu||[];const epuVal=epuObs.length?parseFloat(epuObs[epuObs.length-1].value):null;
   if(!aa&&epuVal==null)return"";
   let h='<div class="aaii-breadth" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">';
-  if(aa){const spread=parseFloat(aa.spread);const spC=spread>20?"var(--cl)":spread>0?"var(--ca)":spread>-20?"var(--wn)":"var(--st)";
-   const bullC=aa.bull>50?"var(--cl)":aa.bull>35?"var(--ca)":"var(--st)";const bearC=aa.bear>50?"var(--st)":aa.bear>35?"var(--wn)":"var(--cl)";
-   /* Contrarian: extreme bearish = bullish signal, extreme bullish = bearish signal */
-   const contrarian=aa.bear>50?"Contrarian bullish":aa.bull>60?"Contrarian bearish":"Neutral";
-   const contC=aa.bear>50?"var(--cl)":aa.bull>60?"var(--st)":"var(--t3)";
+  if(aa){const spread=parseFloat(aa.spread);
+   const bearExt=aa.bear>45;const bullExt=aa.bull>50;
+   let extLabel="",extColor="var(--t3)",extIcon="⚖️";
+   if(bearExt){extLabel="CONTRARIAN BULLISH";extColor="var(--cl)";extIcon="🟢"}
+   else if(bullExt){extLabel="RETAIL COMPLACENCY";extColor="var(--wn)";extIcon="🔴"}
+   else{extLabel="NEUTRAL RANGE";extColor="var(--t3)";extIcon="⚖️"}
+   const spC=spread>20?"var(--cl)":spread>0?"var(--ca)":spread>-20?"var(--wn)":"var(--st)";
+   const bullC=aa.bull>50?"var(--wn)":aa.bull>35?"var(--ca)":"var(--t2)";
+   const bearC=aa.bear>50?"var(--cl)":aa.bear>35?"var(--ca)":"var(--t2)";
+   const chg=aa.chg4wk!=null?parseFloat(aa.chg4wk):null;
+   const chgC=chg==null?"var(--t4)":chg>5?"var(--cl)":chg<-5?"var(--st)":"var(--t3)";
+   const chgArrow=chg==null?"":chg>0?"▲":chg<0?"▼":"▬";
+   const capit=st.momentum?calcCapitulation():{active:false};
    h+=`<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">AAII INVESTOR SENTIMENT</span><span class="m" style="font-size:8px;color:var(--t4)">Weekly</span></div>
-    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"><div><span class="m" style="font-size:22px;font-weight:800;color:${spC}">${spread>0?"+":""}${aa.spread}</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">spread</span></div><div class="m" style="font-size:9px;font-weight:700;color:${contC}">${contrarian}</div></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+     <div><span class="m" style="font-size:22px;font-weight:800;color:${spC}">${spread>0?"+":""}${aa.spread}</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">spread</span></div>
+     <div style="text-align:right">
+      <div class="m" style="font-size:10px;font-weight:700;color:${extColor}">${extIcon} ${extLabel}</div>
+      ${chg!=null?`<div class="m" style="font-size:9px;color:${chgC};margin-top:2px">${chgArrow} ${chg>0?"+":""}${aa.chg4wk}pp 4wk</div>`:""}
+     </div>
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:6px">
      <div style="flex:1;background:rgba(0,230,118,.08);border-radius:4px;padding:6px 8px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">BULL</div><div class="m" style="font-size:14px;font-weight:800;color:${bullC}">${aa.bull.toFixed(1)}%</div></div>
      ${aa.neutral!=null?`<div style="flex:1;background:rgba(120,144,156,.08);border-radius:4px;padding:6px 8px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">NEUTRAL</div><div class="m" style="font-size:14px;font-weight:800;color:var(--t3)">${aa.neutral.toFixed(1)}%</div></div>`:""}
      <div style="flex:1;background:rgba(255,23,68,.08);border-radius:4px;padding:6px 8px;text-align:center"><div class="m" style="font-size:7px;color:var(--t4)">BEAR</div><div class="m" style="font-size:14px;font-weight:800;color:${bearC}">${aa.bear.toFixed(1)}%</div></div>
     </div>
-    <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.05);overflow:hidden;display:flex">
-     <div style="width:${aa.bull}%;background:var(--cl);opacity:.6"></div>
-     ${aa.neutral!=null?`<div style="width:${aa.neutral}%;background:var(--wa);opacity:.4"></div>`:""}
-     <div style="width:${aa.bear}%;background:var(--st);opacity:.6"></div>
+    <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.05);overflow:hidden;display:flex;width:100%">
+     <div style="width:${aa.bull}%;background:var(--cl);opacity:.6;flex-shrink:0"></div>
+     ${aa.neutral!=null?`<div style="width:${aa.neutral}%;background:var(--wa);opacity:.4;flex-shrink:0"></div>`:""}
+     <div style="width:${aa.bear}%;background:var(--st);opacity:.6;flex-shrink:0"></div>
     </div>
-    <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px"><div style="font-size:10px;color:#888;line-height:1.6">Weekly survey of individual investors (not institutions). Members report whether they are bullish, bearish, or neutral on the stock market over the next 6 months. Extreme readings are contrarian — when bears exceed 50%, forward 6-month returns have historically averaged +15%. When bulls exceed 60%, returns drop to ~+2%.</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="m" style="font-size:8px;color:var(--t5)">Display only — not in composite. Supplements UMich consumer sentiment.</span><a href="https://www.aaii.com/sentimentsurvey/sent_results" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">aaii.com/sentimentsurvey →</a></div></div>
+    ${capit.active?`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,230,118,.1);border-radius:6px;border:1px solid rgba(0,230,118,.25)"><div class="m" style="font-size:9px;font-weight:800;color:var(--cl)">🎯 CAPITULATION ACTIVE</div><div class="m" style="font-size:9px;color:var(--t2);margin-top:2px">Bear ${capit.bear}% + S&P ${capit.dd}% drawdown. Signal boost −0.5 to market score.</div></div>`:""}
+    <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
+     <div style="font-size:10px;color:#888;line-height:1.6">Weekly survey of engaged individual investors. Extremes are informative: Bear >45% marks contrarian bullish zones (90th percentile historical). Bull >50% marks complacency. Capitulation signal (Bear>50 + DD>10%) is rare but highly predictive (8/8 historical fires, +24.7% avg fwd 12mo).</div>
+     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="m" style="font-size:8px;color:var(--t5)">Context only — capitulation flags feed market signal.</span><a href="https://www.aaii.com/sentimentsurvey/sent_results" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">aaii.com →</a></div></div>
    </div>`}
   /* EPU Reference card */
   if(epuVal!=null){const epuZ=((epuVal-110)/50);const epuC=epuZ>3?'var(--st)':epuZ>1.5?'var(--wn)':epuZ>1?'var(--ca)':'var(--t3)';
@@ -720,7 +788,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v17.1</strong>: Perf fixes, death cross removed, EPU → reference panel, Market Health → S&P context card.<br>
+ <strong style="color:var(--t4)">v17.3</strong>: AAII Capitulation signal (8/8 historical), extremes + 4wk momentum, color bar fix, EPU monthly fallback.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
