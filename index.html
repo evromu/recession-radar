@@ -240,12 +240,129 @@ async function fetchCAPE(){
 async function fetchCAPEHist(){try{const url="https://www.multpl.com/shiller-pe/table/by-month";const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const h=await r.text();const rows=[];const re=/<tr[^>]*>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([\d.]+)<\/td>/gi;let m;while((m=re.exec(h))!==null){const d=new Date(m[1].trim());const v=parseFloat(m[2]);if(!isNaN(d)&&v>3)rows.push({month:d.toISOString().substring(0,7),value:v})}if(rows.length>12)return rows}catch{continue}}}catch{}return[]}
 async function fetchCLF(){try{const clf=await ff("CLF16OV",st.key,3);if(clf.length){st.clfRaw=parseFloat(clf[clf.length-1].value);const claims=st.d.ic||[];if(claims.length>=4&&st.clfRaw){const l4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));st.claims4wk=l4.reduce((a,b)=>a+b,0)/l4.length;st.clfRatio=st.claims4wk/st.clfRaw}}}catch{}}
 async function fetchAAII(){
- /* Multiple sources tried in order of reliability:
-    1. /latest — summary page with simple "XX.X% YY.Y% ZZ.Z% Bearish · Neutral · Bullish" format
-    2. insights.aaii.com/feed — Substack RSS feed with full narrative article bodies
-    3. /sentimentsurvey — main page with narrative format (may be JS-rendered SPA)
-    4. /sent_results — chart page (last resort, JS-rendered)
-    5. updatearchive — article archive index */
+ /* Strategy: Jina Reader (r.jina.ai) renders JS pages in a headless browser and
+    returns clean text. Works for SPAs where basic CORS proxies return only shells.
+    Free tier, CORS-enabled — can be called directly from browser without proxy.
+    Falls back to CORS proxies for non-JS pages. */
+ const VERBS="(?:increased|decreased|rose|fell|climbed|dropped|gained|lost|jumped|tumbled|slipped|edged|ticked|was up|was down)";
+
+ /* Attempt a single URL with given fetcher function. Returns true if successful. */
+ const tryUrl=async(url,fetcher,label)=>{
+  try{
+   const r=await fetcher(url);
+   if(!r||!r.ok)return null;
+   const h=await r.text();
+   if(!h||h.length<100)return null;
+   /* Save diagnostic snippet to localStorage for debugging */
+   try{
+    const snippet=h.substring(0,2000);
+    localStorage.setItem("rr_aaii_debug",JSON.stringify({url,label,len:h.length,snippet,t:Date.now()}));
+   }catch{}
+   console.log("AAII "+label+" ("+url+"): "+h.length+" chars, Bullish occurrences: "+((h.match(/Bullish/gi)||[]).length));
+   return h;
+  }catch(e){console.log("AAII "+label+" error for "+url+": "+e.message);return null}
+ };
+
+ /* Parse HTML/text content for sentiment values. Returns parsed object or null. */
+ const parseContent=(h)=>{
+  let bull=null,bear=null,neut=null,matchedVia=null;
+
+  /* Bearish-first format (AAII /latest page): "43.0% 21.3% 35.7% Bearish · Neutral · Bullish" */
+  const lbf=h.match(/(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,400}?Bearish[\s\S]{0,100}?Neutral[\s\S]{0,100}?Bullish/i);
+  if(lbf){bear=parseFloat(lbf[1]);neut=parseFloat(lbf[2]);bull=parseFloat(lbf[3]);matchedVia="latestBearFirst"}
+
+  /* Bullish-first format */
+  if(bull==null){
+   const lbf2=h.match(/(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,400}?Bullish[\s\S]{0,100}?Neutral[\s\S]{0,100}?Bearish/i);
+   if(lbf2){bull=parseFloat(lbf2[1]);neut=parseFloat(lbf2[2]);bear=parseFloat(lbf2[3]);matchedVia="latestBullFirst"}
+  }
+
+  /* Narrative: "Bullish sentiment [verb] N percentage points to X.X%" */
+  if(bull==null||neut==null||bear==null){
+   const nb=h.match(new RegExp("Bullish sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
+   const nn=h.match(new RegExp("Neutral sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
+   const nz=h.match(new RegExp("Bearish sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
+   if(nb&&nn&&nz){bull=parseFloat(nb[1]);neut=parseFloat(nn[1]);bear=parseFloat(nz[1]);matchedVia="narrative"}
+  }
+
+  /* "remained/unchanged at X.X%" variant */
+  if(bull==null||neut==null||bear==null){
+   const ub=h.match(/Bullish sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
+   const un=h.match(/Neutral sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
+   const uz=h.match(/Bearish sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
+   if(ub&&un&&uz){bull=parseFloat(ub[1]);neut=parseFloat(un[1]);bear=parseFloat(uz[1]);matchedVia="unchanged"}
+  }
+
+  /* "This week" structured format */
+  if(bull==null||neut==null||bear==null){
+   const m=h.match(/This week['\u2019]s Sentiment Survey results:\s*Bullish:\s*([\d]+(?:\.[\d]+)?)\s*%[\s\S]{0,200}?Neutral:\s*([\d]+(?:\.[\d]+)?)\s*%[\s\S]{0,200}?Bearish:\s*([\d]+(?:\.[\d]+)?)\s*%/i);
+   if(m){bull=parseFloat(m[1]);neut=parseFloat(m[2]);bear=parseFloat(m[3]);matchedVia="thisweek"}
+  }
+
+  /* Validate */
+  if(bull!=null&&neut!=null&&bear!=null){
+   const sum=bull+bear+neut;
+   if(sum<97||sum>103)return null;
+   if(bull===37.5&&neut===31.5&&bear===31.0)return null;
+   if([0,25,50,75,100].includes(bull)&&[0,25,50,75,100].includes(neut)&&[0,25,50,75,100].includes(bear))return null;
+   if(bull<5||bull>80||bear<5||bear>80||neut<3||neut>80)return null;
+   if(bull===neut||bull===bear||neut===bear)return null;
+   return{bull,bear,neut,matchedVia};
+  }
+  return null;
+ };
+
+ /* Store successful parse in st.aaii and return */
+ const recordSuccess=(parsed,url,label)=>{
+  const spread=parsed.bull-parsed.bear;
+  const HIST_KEY="rr_aaii_hist";
+  let hist=[];try{hist=JSON.parse(localStorage.getItem(HIST_KEY)||"[]")}catch{hist=[]}
+  const today=new Date().toISOString().split("T")[0];
+  if(!hist.length||hist[hist.length-1].d!==today){
+   hist.push({d:today,s:spread});
+   hist=hist.slice(-60);
+   try{localStorage.setItem(HIST_KEY,JSON.stringify(hist))}catch{}
+  }
+  let spread4wk=null;
+  if(hist.length>=4){
+   const fourWeeksAgo=new Date(Date.now()-28*24*3600*1000).toISOString().split("T")[0];
+   const match=hist.find(x=>x.d<=fourWeeksAgo);
+   if(match)spread4wk=match.s;
+  }
+  st.aaii={bull:parsed.bull,bear:parsed.bear,neutral:parsed.neut,
+           spread:spread.toFixed(1),
+           spread4wk:spread4wk!=null?spread4wk.toFixed(1):null,
+           chg4wk:spread4wk!=null?(spread-spread4wk).toFixed(1):null,
+           lastUpdate:null,
+           fetched:new Date().toISOString(),
+           sourceUrl:url,
+           matchedVia:parsed.matchedVia+" via "+label};
+  console.log("AAII SUCCESS via "+label+" ("+parsed.matchedVia+"): Bull="+parsed.bull+"% Neut="+parsed.neut+"% Bear="+parsed.bear+"%");
+ };
+
+ /* ───────────────────────────────────────────────────────────────
+    STRATEGY 1: Jina Reader (r.jina.ai) — renders JS, CORS-enabled.
+    Wraps any URL: https://r.jina.ai/<target_url>
+    Returns clean markdown/text of fully-rendered page.
+    ─────────────────────────────────────────────────────────────── */
+ const targetUrls=[
+  "https://www.aaii.com/sentimentsurvey",
+  "https://www.aaii.com/latest",
+  "https://insights.aaii.com"
+ ];
+ for(const target of targetUrls){
+  const jinaUrl="https://r.jina.ai/"+target;
+  const h=await tryUrl(jinaUrl,u=>fetch(u,{signal:AbortSignal.timeout(20000),headers:{"X-Return-Format":"markdown"}}),"jina");
+  if(h){
+   const parsed=parseContent(h);
+   if(parsed){recordSuccess(parsed,target,"jina");return}
+  }
+ }
+
+ /* ───────────────────────────────────────────────────────────────
+    STRATEGY 2: Direct fetch via CORS proxies (no JS rendering).
+    Fallback in case Jina is rate-limited or down.
+    ─────────────────────────────────────────────────────────────── */
  const urls=[
   "https://www.aaii.com/latest",
   "https://insights.aaii.com/feed",
@@ -253,178 +370,19 @@ async function fetchAAII(){
   "https://www.aaii.com/latest/updatearchive?category=351",
   "https://www.aaii.com/sentimentsurvey/sent_results"
  ];
- const VERBS="(?:increased|decreased|rose|fell|climbed|dropped|gained|lost|jumped|tumbled|slipped|edged|ticked|was up|was down)";
- for(const url of urls){const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];
-  for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});
-   if(!r.ok)continue;const h=await r.text();
-   let bull=null,bear=null,neut=null,lastUpdate=null,matchedVia=null;
+ for(const url of urls){
+  const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];
+  for(const i of ord){
+   const h=await tryUrl(url,u=>fetch(PX[i](u),{signal:AbortSignal.timeout(12000)}),"proxy"+i);
+   if(!h)continue;
+   const parsed=parseContent(h);
+   if(parsed){recordSuccess(parsed,url,"proxy"+i);return}
+  }
+ }
 
-   /* PRIMARY-A: /latest page format — "Updated X ago · YY.Y% ZZ.Z% AA.A% Bearish · Neutral · Bullish"
-      The three values are Bearish, Neutral, Bullish in that order. Uses flexible
-      [\s\S] gaps to handle HTML tags between values (e.g. <div>X%</div><div>Y%</div>). */
-   const latestBearFirst=h.match(/(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,400}?Bearish[\s\S]{0,100}?Neutral[\s\S]{0,100}?Bullish/i);
-   if(latestBearFirst){
-    /* Order: Bearish, Neutral, Bullish */
-    bear=parseFloat(latestBearFirst[1]);
-    neut=parseFloat(latestBearFirst[2]);
-    bull=parseFloat(latestBearFirst[3]);
-    matchedVia="latestBearFirst";
-   }
-   /* Same format but Bullish-first ordering (defensive) */
-   if(bull==null){
-    const latestBullFirst=h.match(/(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,200}?(\d+(?:\.\d+)?)\s*%[\s\S]{0,400}?Bullish[\s\S]{0,100}?Neutral[\s\S]{0,100}?Bearish/i);
-    if(latestBullFirst){
-     bull=parseFloat(latestBullFirst[1]);
-     neut=parseFloat(latestBullFirst[2]);
-     bear=parseFloat(latestBullFirst[3]);
-     matchedVia="latestBullFirst";
-    }
-   }
-
-   /* PRIMARY-B: Narrative pattern from main pages or Substack RSS.
-      Format: "Bullish sentiment [desc] [verb] N.N percentage points to X.X%" */
-   if(bull==null||neut==null||bear==null){
-    const narrBull=h.match(new RegExp("Bullish sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
-    const narrNeut=h.match(new RegExp("Neutral sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
-    const narrBear=h.match(new RegExp("Bearish sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
-    if(narrBull&&narrNeut&&narrBear){
-     bull=parseFloat(narrBull[1]);neut=parseFloat(narrNeut[1]);bear=parseFloat(narrBear[1]);
-     matchedVia="narrative";
-    }
-   }
-
-   /* SECONDARY: "remained/unchanged at X.X%" variant for stable weeks */
-   if(bull==null||neut==null||bear==null){
-    const ub=h.match(/Bullish sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
-    const un=h.match(/Neutral sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
-    const uz=h.match(/Bearish sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
-    if(ub&&un&&uz){bull=parseFloat(ub[1]);neut=parseFloat(un[1]);bear=parseFloat(uz[1]);matchedVia="unchanged"}
-   }
-
-   /* TERTIARY: Blog-article structured format, anchored on "This week" */
-   if(bull==null||neut==null||bear==null){
-    const m=h.match(/This week['\u2019]s Sentiment Survey results:\s*Bullish:\s*([\d]+(?:\.[\d]+)?)\s*%[\s\S]{0,200}?Neutral:\s*([\d]+(?:\.[\d]+)?)\s*%[\s\S]{0,200}?Bearish:\s*([\d]+(?:\.[\d]+)?)\s*%/i);
-    if(m){bull=parseFloat(m[1]);neut=parseFloat(m[2]);bear=parseFloat(m[3]);matchedVia="thisweek"}
-   }
-
-   /* QUATERNARY: Date-anchored parsing for structured data tables.
-      AAII /sent_results page is a historical data table — for each date, find the
-      triple (Bull/Neutral/Bear) that FOLLOWS it within a tight window. Pick the
-      triple attached to the most recent date. No fuzzy scoring — unambiguous. */
-   if(bull==null||neut==null||bear==null){
-    const bullAll=[...h.matchAll(/Bullish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
-    const neutAll=[...h.matchAll(/Neutral:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
-    const bearAll=[...h.matchAll(/Bearish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
-    console.log("AAII fallback: found",bullAll.length,"bull matches,",neutAll.length,"neut,",bearAll.length,"bear");
-
-    /* Detect all recent dates (within 60 days of today) */
-    const todayMs=Date.now();
-    const recentDates=[];
-    const datePatterns=[
-     /(\d{1,2})\/(\d{1,2})\/(\d{4})/g,
-     /(\d{1,2})\/(\d{1,2})\/(\d{2})(?!\d)/g,
-     /(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})/gi,
-     /(\d{4})-(\d{2})-(\d{2})/g
-    ];
-    for(const pat of datePatterns){
-     for(const m of h.matchAll(pat)){
-      try{
-       const d=new Date(m[0]);
-       if(isNaN(d.getTime()))continue;
-       const diffDays=(todayMs-d.getTime())/(24*3600*1000);
-       /* Must be in the past and within 60 days */
-       if(diffDays<-7||diffDays>60)continue;
-       recentDates.push({pos:m.index,diffDays:Math.abs(diffDays),str:m[0]});
-      }catch(e){continue}
-     }
-    }
-    /* Sort by recency (most recent first) */
-    recentDates.sort((a,b)=>a.diffDays-b.diffDays);
-    console.log("AAII recent dates:",recentDates.slice(0,5).map(d=>d.str+" ("+d.diffDays.toFixed(0)+"d ago, pos "+d.pos+")"));
-
-    /* For each date, find the triple that FOLLOWS it in tight sequence: Bull → Neut → Bear */
-    const findTripleAfter=(datePos,requireDecimals)=>{
-     const bm=bullAll.find(m=>m.index>=datePos&&m.index<datePos+300);
-     if(!bm)return null;
-     if(requireDecimals&&!bm[1].includes('.'))return null;
-     const nm=neutAll.find(m=>m.index>=bm.index&&m.index<bm.index+200);
-     if(!nm)return null;
-     if(requireDecimals&&!nm[1].includes('.'))return null;
-     const zm=bearAll.find(m=>m.index>=nm.index&&m.index<nm.index+200);
-     if(!zm)return null;
-     if(requireDecimals&&!zm[1].includes('.'))return null;
-     const bv=parseFloat(bm[1]);const nv=parseFloat(nm[1]);const zv=parseFloat(zm[1]);
-     /* Validate */
-     const sum=bv+nv+zv;
-     if(sum<97||sum>103)return null;
-     if(bv===nv||bv===zv||nv===zv)return null;
-     if(bv<5||bv>80||nv<3||nv>80||zv<5||zv>80)return null;
-     if(bv===37.5&&nv===31.5&&zv===31.0)return null;
-     if([0,25,50,75,100].includes(bv)&&[0,25,50,75,100].includes(nv)&&[0,25,50,75,100].includes(zv))return null;
-     return{bull:bv,neut:nv,bear:zv};
-    };
-
-    /* Try each recent date in order of recency */
-    let found=null;
-    for(const dp of recentDates){
-     let t=findTripleAfter(dp.pos,true);
-     if(t){found={...t,dateStr:dp.str,daysAgo:dp.diffDays};break}
-    }
-    /* If no decimal match, fall back to integer match */
-    if(!found){
-     for(const dp of recentDates){
-      let t=findTripleAfter(dp.pos,false);
-      if(t){found={...t,dateStr:dp.str,daysAgo:dp.diffDays};break}
-     }
-    }
-    if(found){
-     bull=found.bull;neut=found.neut;bear=found.bear;matchedVia="dateAnchored";
-     console.log("AAII date-anchored pick: "+found.dateStr+" B="+bull+" N="+neut+" Z="+bear+" sum="+(bull+neut+bear).toFixed(1));
-    }else{
-     console.log("AAII: no valid triple found anchored to any recent date");
-    }
-   }
-
-   /* FINAL VALIDATION */
-   if(bull!=null&&neut!=null&&bear!=null){
-    const sum=bull+bear+neut;
-    if(sum<97||sum>103){console.warn("AAII rejected — sum "+sum.toFixed(1));bull=null;bear=null;neut=null}
-    else if(bull===37.5&&neut===31.5&&bear===31.0){console.warn("AAII rejected — historical averages");bull=null;bear=null;neut=null}
-    else if([0,25,50,75,100].includes(bull)&&[0,25,50,75,100].includes(neut)&&[0,25,50,75,100].includes(bear)){console.warn("AAII rejected — chart axis");bull=null;bear=null;neut=null}
-    else if(bull<5||bull>80||bear<5||bear>80||neut<3||neut>80){console.warn("AAII rejected — out of range",bull,neut,bear);bull=null;bear=null;neut=null}
-   }
-
-   if(bull!=null&&neut!=null&&bear!=null){
-    console.log("AAII success via "+matchedVia+": Bull="+bull+"% Neut="+neut+"% Bear="+bear+"%");
-    const dateM=h.match(/(?:Week ending|as of|Updated[:\s]+|survey results?\s+(?:released|published|for)[:\s]+)([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i)
-                ||h.match(/(\d{1,2}\/\d{1,2}\/\d{4})/)
-                ||h.match(/([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/);
-    lastUpdate=dateM?dateM[1]:null;
-    const spread=bull-bear;
-    const HIST_KEY="rr_aaii_hist";
-    let hist=[];try{hist=JSON.parse(localStorage.getItem(HIST_KEY)||"[]")}catch{hist=[]}
-    const today=new Date().toISOString().split("T")[0];
-    if(!hist.length||hist[hist.length-1].d!==today){
-     hist.push({d:today,s:spread});
-     hist=hist.slice(-60);
-     try{localStorage.setItem(HIST_KEY,JSON.stringify(hist))}catch{}
-    }
-    let spread4wk=null;
-    if(hist.length>=4){
-     const fourWeeksAgo=new Date(Date.now()-28*24*3600*1000).toISOString().split("T")[0];
-     const match=hist.find(x=>x.d<=fourWeeksAgo);
-     if(match)spread4wk=match.s;
-    }
-    st.aaii={bull,bear,neutral:neut,spread:spread.toFixed(1),
-             spread4wk:spread4wk!=null?spread4wk.toFixed(1):null,
-             chg4wk:spread4wk!=null?(spread-spread4wk).toFixed(1):null,
-             lastUpdate:lastUpdate,
-             fetched:new Date().toISOString(),
-             sourceUrl:url,matchedVia};
-    return}
-  }catch(e){console.log("AAII fetch error for "+url+":",e.message);continue}}}
- console.warn("AAII: all URLs/proxies/patterns exhausted");
- st.aaii=null}
+ console.warn("AAII: all URLs/proxies/strategies exhausted");
+ st.aaii=null;
+}
 function calcBreadthProxy(){
  /* S&P 500 vs 200-day MA proxy — uses daily FRED SP500 data we already fetch */
  const spx=st.mcFull.sp500||[];if(spx.length<200){st.breadth=null;return}
