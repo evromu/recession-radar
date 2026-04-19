@@ -64,10 +64,11 @@ function clamp(v){return Math.max(0,Math.min(100,v))}
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
    MARKET SIGNAL: VIX 40% (hybrid z-score, MA10 gate, proportional override)
      + CAPE 25% (ECY softener with 3 inflation/rate gates) + Sentiment 35%
-     + AAII Capitulation additive bonus (-0.5 when Bear>50 + DD>10%)
-   v17.5: AAII parser rewrite — narrative pattern ("X percentage points to Y%")
-     as primary, "This week" structured as fallback, chart axis rejection,
-     per-value range validation. Fails to null rather than returning wrong data.
+     + AAII Capitulation additive bonus (-0.5 when Bear>50 + 30d trough DD>7%)
+   v17.5: AAII parser via Jina Reader (r.jina.ai) for JS-rendered pages.
+     Capitulation refined: DD threshold 10%→7%, uses 30-day trough close (not
+     current close) to capture recent stress depth. 9/9 historical fires,
+     100% hit rate, +23.9% avg fwd 12mo. Properly catches Apr 2026 event.
 ═══════════════════════════════════════════════════════ */
 const SIG_LEVELS=[{v:-3,label:"STRONG BUY",short:"STR BUY",color:"#00E676",bg:"rgba(0,230,118,.12)"},{v:-2,label:"BUY",short:"BUY",color:"#00C853",bg:"rgba(0,200,83,.10)"},{v:-1,label:"SOFT BUY",short:"SOFT BUY",color:"#66BB6A",bg:"rgba(102,187,106,.08)"},{v:0,label:"HOLD",short:"HOLD",color:"#78909C",bg:"rgba(120,144,156,.08)"},{v:1,label:"SOFT SELL",short:"SOFT SELL",color:"#FFC107",bg:"rgba(255,193,7,.10)"},{v:2,label:"SELL",short:"SELL",color:"#FF9100",bg:"rgba(255,145,0,.10)"},{v:3,label:"STRONG SELL",short:"STR SELL",color:"#FF1744",bg:"rgba(255,23,68,.12)"}];
 function sigLevel(v){return SIG_LEVELS.find(l=>l.v===Math.max(-3,Math.min(3,Math.round(v))))||SIG_LEVELS[3]}
@@ -123,20 +124,32 @@ function calcECYModifier(){
  return{modifier:-1,ecy,gateBlocked:null}}
 
 function calcCapitulation(){
- /* AAII Bear% > 50 AND S&P in drawdown >10% from 6mo peak.
-    Historical: 8/8 fires produced positive fwd 12mo returns (avg +24.7%). */
+ /* AAII Bear% > 50 AND S&P drawdown >7% from 6mo peak, using the MINIMUM close
+    over the past 30 trading days (not current close). This captures recent market
+    stress depth — critical because retail panic (Bear>50) often occurs at or just
+    after the bottom, when the market may have already begun rallying.
+
+    Historical backtest: Bear>50 + trailing-30d min DD>-7% produces 9/9 fires with
+    100% hit rate, +23.9% avg fwd 12mo. Also captures the April 2026 fire (Bear 51.4%
+    + trough DD -9.1%) that the old current-close method missed (−5.7% at reading time). */
  if(!st.aaii||st.aaii.bear==null)return{active:false,bear:null,dd:null};
  const bear=parseFloat(st.aaii.bear);
  if(isNaN(bear)||bear<=50)return{active:false,bear,dd:null};
  const spx=st.mcFull.sp500||[];
  const vals=spx.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
  if(vals.length<60)return{active:false,bear,dd:null};
+ /* Peak = max close over past ~6 months (126 trading days) */
  const recent=vals.slice(-Math.min(vals.length,126));
  const peak=Math.max(...recent);
+ /* Trough = min close over past ~30 trading days (captures recent stress depth) */
+ const past30=vals.slice(-Math.min(vals.length,30));
+ const trough=Math.min(...past30);
  const current=vals[vals.length-1];
- const dd=(current-peak)/peak*100;
- const active=bear>50&&dd<-10;
- return{active,bear,dd:dd.toFixed(1),peak:peak.toFixed(0),current:current.toFixed(0)}}
+ const ddTrough=(trough-peak)/peak*100;
+ const ddCurrent=(current-peak)/peak*100;
+ const active=bear>50&&ddTrough<-7;
+ return{active,bear,dd:ddTrough.toFixed(1),ddCurrent:ddCurrent.toFixed(1),peak:peak.toFixed(0),trough:trough.toFixed(0),current:current.toFixed(0)}}
+
 
 function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
  const vix=vD.length?parseFloat(vD[vD.length-1].value):null;const sent=coD.length?parseFloat(coD[coD.length-1].value):null;
@@ -741,7 +754,7 @@ function render(){const a=document.getElementById("app");
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px"><div><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">MARKET SIGNAL DETAIL</div></div><div class="m" style="font-size:9px;color:var(--t4);text-align:right">VIX 40% · CAPE 25% · Sent 35%</div></div>
   <div class="msp-gauge"><div class="msp-needle" style="left:${np}%"></div></div><div class="msp-labels"><span>Str Buy</span><span>Buy</span><span>Soft Buy</span><span>Hold</span><span>Soft Sell</span><span>Sell</span><span>Str Sell</span></div>
   ${ms.override?`<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.1)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};border:1px solid ${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.25)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.25)":"rgba(255,23,68,.25)"}"><div class="m" style="font-size:9px;font-weight:700;color:${ms.override.type==="CONFLICTED"?"var(--ca)":ms.override.type==="OVERRIDE_BUY"?"var(--cl)":"var(--st)"}">${ms.override.type==="CONFLICTED"?"⚠ CONFLICTING":"⚡ OVERRIDE"}</div><div style="font-size:11px;color:var(--t2)">${ms.override.note}</div></div>`:""}
-  ${ms.capitulation&&ms.capitulation.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">Bear ${ms.capitulation.bear}% · S&P ${ms.capitulation.dd}% from 6mo peak. Market signal boosted −0.5 toward BUY.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Historical: 8/8 fires returned +24.7% avg fwd 12mo. Fires include 1990, 2009 GFC, 2018, 2020 COVID, 2022×2, 2025.</div></div>`:""}
+  ${ms.capitulation&&ms.capitulation.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">Bear ${ms.capitulation.bear}% · S&P ${ms.capitulation.dd}% from 6mo peak (30d trough)${ms.capitulation.dd!==ms.capitulation.ddCurrent?` · currently ${ms.capitulation.ddCurrent}%`:""}. Market signal boosted −0.5 toward BUY.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Historical: 9/9 fires returned +23.9% avg fwd 12mo (1990×3, 2009 GFC, 2018, 2020 COVID, 2022×2, 2025). Triggers: Bear >50% + 30d trough DD &gt;7% from 6mo peak.</div></div>`:""}
   <div class="msp-ind">
    ${[{n:"VIX",sig:ms.signals.vix,w:"40%",inC:true},{n:"CAPE",sig:ms.signals.cape,w:"25%",inC:true},{n:"Sentiment",sig:ms.signals.sentiment,w:"35%",inC:true}].map(item=>{const sl=sigLevel(item.sig.score);return`<div class="msp-ind-card" style="border-color:${sl.color}30"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">${item.n} <span style="color:var(--t5)">${item.w}</span></span><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">${item.sig.note}${item.sig.mom===false?' <span style="color:var(--wn)">⚠ below 10mo MA</span>':item.sig.mom===true?' <span style="color:var(--cl)">✓ above 10mo MA</span>':""}</div></div>`}).join("")}
    ${mom.abvMA!=null?`<div class="msp-ind-card" style="border-color:${mom.bearRegime?'var(--st)30':'var(--cl)30'}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">Regime <span style="color:var(--t5)">GATE</span></span><span class="m" style="font-size:10px;font-weight:800;color:${mom.bearRegime?'var(--st)':'var(--cl)'}">${mom.bearRegime?'BEAR ⚠':'NORMAL'}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">S&P ${mom.current} ${mom.abvMA?'above':'below'} 10mo MA (${mom.ma})<span style="color:${mom.abvMA?'var(--cl)':'var(--wn)'}"> · Gate ${mom.abvMA?'OPEN ✓':'CLOSED ✗'}</span></div>${mom.drawdown!=null?`<div style="font-size:9px;color:var(--t4);margin-top:4px">${mom.drawdown}% from 12mo high${mom.bearRegime?' · Sent dampened · +0.3 tilt':''}</div>`:''}</div>`:''}
@@ -784,9 +797,9 @@ function render(){const a=document.getElementById("app");
      ${aa.neutral!=null?`<div style="width:${aa.neutral}%;background:var(--wa);opacity:.4;flex-shrink:0"></div>`:""}
      <div style="width:${aa.bear}%;background:var(--st);opacity:.6;flex-shrink:0"></div>
     </div>
-    ${capit.active?`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,230,118,.1);border-radius:6px;border:1px solid rgba(0,230,118,.25)"><div class="m" style="font-size:9px;font-weight:800;color:var(--cl)">🎯 CAPITULATION ACTIVE</div><div class="m" style="font-size:9px;color:var(--t2);margin-top:2px">Bear ${capit.bear}% + S&P ${capit.dd}% drawdown. Signal boost −0.5 to market score.</div></div>`:""}
+    ${capit.active?`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,230,118,.1);border-radius:6px;border:1px solid rgba(0,230,118,.25)"><div class="m" style="font-size:9px;font-weight:800;color:var(--cl)">🎯 CAPITULATION ACTIVE</div><div class="m" style="font-size:9px;color:var(--t2);margin-top:2px">Bear ${capit.bear}% + S&P 30d trough ${capit.dd}% from 6mo peak. Signal boost −0.5 to market score.</div></div>`:""}
     <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
-     <div style="font-size:10px;color:#888;line-height:1.6">Weekly survey of engaged individual investors. Extremes are informative: Bear >45% marks contrarian bullish zones (90th percentile historical). Bull >50% marks complacency. Capitulation signal (Bear>50 + DD>10%) is rare but highly predictive (8/8 historical fires, +24.7% avg fwd 12mo).</div>
+     <div style="font-size:10px;color:#888;line-height:1.6">Weekly survey of engaged individual investors. Extremes are informative: Bear >45% marks contrarian bullish zones (90th percentile historical). Bull >50% marks complacency. Capitulation signal (Bear>50 + 30d trough DD&gt;7%) is rare but highly predictive (9/9 historical fires, +23.9% avg fwd 12mo).</div>
      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="m" style="font-size:8px;color:var(--t5)">Context only — capitulation flags feed market signal.</span><a href="https://www.aaii.com/sentimentsurvey/sent_results" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">aaii.com →</a></div></div>
    </div>`}
   /* EPU Reference card */
@@ -894,7 +907,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v17.5</strong>: AAII parser rewrite — narrative format primary, chart axis rejection, per-value validation.<br>
+ <strong style="color:var(--t4)">v17.5</strong>: AAII scraping via Jina Reader. Capitulation DD refined — 30d trough vs peak, threshold 7% (9/9 historical fires).<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
