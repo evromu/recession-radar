@@ -247,48 +247,87 @@ async function fetchAAII(){
  for(const url of urls){const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];
   for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});
    if(!r.ok)continue;const h=await r.text();
-   let bull=null,bear=null,neut=null,lastUpdate=null;
+   let bull=null,bear=null,neut=null,lastUpdate=null,matchedVia=null;
 
    /* PRIMARY: Narrative pattern from main /sentimentsurvey page.
       Format: "Bullish sentiment [desc] [verb] N.N percentage points to X.X%"
-      The phrase "percentage points to" is AAII's consistent phrasing for the
-      current reading. Anchoring on it prevents capturing the weekly change value. */
+      Anchoring on "percentage points to" guarantees capturing the current reading,
+      not the weekly change value (which comes before the phrase). */
    const narrBull=h.match(new RegExp("Bullish sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
    const narrNeut=h.match(new RegExp("Neutral sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
    const narrBear=h.match(new RegExp("Bearish sentiment[\\s\\S]{0,500}?"+VERBS+"\\s+[\\d.]+\\s+percentage\\s+points?\\s+to\\s+([\\d]+(?:\\.[\\d]+)?)\\s*%","i"));
    if(narrBull&&narrNeut&&narrBear){
     bull=parseFloat(narrBull[1]);neut=parseFloat(narrNeut[1]);bear=parseFloat(narrBear[1]);
+    matchedVia="narrative";
    }
 
-   /* SECONDARY: "remained/unchanged at X.X%" variant for stable weeks. */
+   /* SECONDARY: "remained/unchanged at X.X%" variant for stable weeks */
    if(bull==null||neut==null||bear==null){
     const ub=h.match(/Bullish sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
     const un=h.match(/Neutral sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
     const uz=h.match(/Bearish sentiment[\s\S]{0,500}?(?:remained|unchanged|was)\s+(?:unchanged\s+)?at\s+([\d]+(?:\.[\d]+)?)\s*%/i);
-    if(ub&&un&&uz){bull=parseFloat(ub[1]);neut=parseFloat(un[1]);bear=parseFloat(uz[1])}
+    if(ub&&un&&uz){bull=parseFloat(ub[1]);neut=parseFloat(un[1]);bear=parseFloat(uz[1]);matchedVia="unchanged"}
    }
 
-   /* TERTIARY: Blog-article structured format, strictly anchored on "This week".
-      Handles both straight and curly apostrophes. */
+   /* TERTIARY: Blog-article structured format, anchored on "This week" */
    if(bull==null||neut==null||bear==null){
     const m=h.match(/This week['\u2019]s Sentiment Survey results:\s*Bullish:\s*([\d]+(?:\.[\d]+)?)\s*%[\s\S]{0,200}?Neutral:\s*([\d]+(?:\.[\d]+)?)\s*%[\s\S]{0,200}?Bearish:\s*([\d]+(?:\.[\d]+)?)\s*%/i);
-    if(m){bull=parseFloat(m[1]);neut=parseFloat(m[2]);bear=parseFloat(m[3])}
+    if(m){bull=parseFloat(m[1]);neut=parseFloat(m[2]);bear=parseFloat(m[3]);matchedVia="thisweek"}
    }
 
-   /* VALIDATION — reject anything that doesn't look like a real reading */
+   /* QUATERNARY: Combinatorial fallback.
+      Find ALL "Bullish: X%", "Neutral: X%", "Bearish: X%" occurrences, try each triple,
+      accept first that validates. Two passes: first require decimal precision (real
+      AAII readings always have tenths), then fall back to integers if none found. */
+   if(bull==null||neut==null||bear==null){
+    const bullAll=[...h.matchAll(/Bullish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
+    const neutAll=[...h.matchAll(/Neutral:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
+    const bearAll=[...h.matchAll(/Bearish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
+    console.log("AAII fallback: found",bullAll.length,"bull matches,",neutAll.length,"neut,",bearAll.length,"bear");
+    const tryMatch=(requireDecimals)=>{
+     for(const bm of bullAll){
+      if(requireDecimals&&!bm[1].includes('.'))continue;
+      const bv=parseFloat(bm[1]);
+      for(const nm of neutAll){
+       if(requireDecimals&&!nm[1].includes('.'))continue;
+       const nv=parseFloat(nm[1]);
+       if(Math.abs(nm.index-bm.index)>500)continue;
+       for(const zm of bearAll){
+        if(requireDecimals&&!zm[1].includes('.'))continue;
+        const zv=parseFloat(zm[1]);
+        if(Math.abs(zm.index-bm.index)>500)continue;
+        const sum=bv+nv+zv;
+        if(sum<97||sum>103)continue;
+        if(bv===37.5&&nv===31.5&&zv===31.0)continue;/* historical averages */
+        if([0,25,50,75,100].includes(bv)&&[0,25,50,75,100].includes(nv)&&[0,25,50,75,100].includes(zv))continue;
+        if(bv<5||bv>80||zv<5||zv>80||nv<3||nv>80)continue;
+        return{bull:bv,neut:nv,bear:zv};
+       }
+      }
+     }
+     return null;
+    };
+    /* Pass 1: require decimal precision (real AAII readings) */
+    let found=tryMatch(true);
+    /* Pass 2: accept integers if no decimal matches found */
+    if(!found)found=tryMatch(false);
+    if(found){
+     bull=found.bull;neut=found.neut;bear=found.bear;matchedVia="combinatorial";
+     console.log("AAII combinatorial match: B="+bull+" N="+neut+" Z="+bear+" sum="+(bull+neut+bear).toFixed(1));
+    }
+   }
+
+   /* FINAL VALIDATION */
    if(bull!=null&&neut!=null&&bear!=null){
     const sum=bull+bear+neut;
-    /* Real readings always sum to ~100% */
-    if(sum<97||sum>103){console.warn("AAII sum invalid:",bull,neut,bear,"=",sum);bull=null;bear=null;neut=null}
-    /* Reject historical averages (AAII's long-run values) */
-    else if(bull===37.5&&neut===31.5&&bear===31.0){console.warn("AAII rejected historical avgs");bull=null;bear=null;neut=null}
-    /* Reject chart axis contamination (values at gridline intervals) */
-    else if([0,25,50,75,100].includes(bull)&&[0,25,50,75,100].includes(neut)&&[0,25,50,75,100].includes(bear)){console.warn("AAII rejected chart axis");bull=null;bear=null;neut=null}
-    /* Sanity: each value must be in plausible survey range */
-    else if(bull<5||bull>80||bear<5||bear>80||neut<3||neut>80){console.warn("AAII rejected out-of-range:",bull,neut,bear);bull=null;bear=null;neut=null}
+    if(sum<97||sum>103){console.warn("AAII rejected — sum "+sum.toFixed(1));bull=null;bear=null;neut=null}
+    else if(bull===37.5&&neut===31.5&&bear===31.0){console.warn("AAII rejected — historical averages");bull=null;bear=null;neut=null}
+    else if([0,25,50,75,100].includes(bull)&&[0,25,50,75,100].includes(neut)&&[0,25,50,75,100].includes(bear)){console.warn("AAII rejected — chart axis");bull=null;bear=null;neut=null}
+    else if(bull<5||bull>80||bear<5||bear>80||neut<3||neut>80){console.warn("AAII rejected — out of range",bull,neut,bear);bull=null;bear=null;neut=null}
    }
 
    if(bull!=null&&neut!=null&&bear!=null){
+    console.log("AAII success via "+matchedVia+": Bull="+bull+"% Neut="+neut+"% Bear="+bear+"%");
     const dateM=h.match(/(?:Week ending|as of|Updated[:\s]+|survey results?\s+(?:released|published|for)[:\s]+)([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i)
                 ||h.match(/(\d{1,2}\/\d{1,2}\/\d{4})/)
                 ||h.match(/([A-Z][a-z]+\s+\d{1,2},\s+\d{4})/);
@@ -313,9 +352,11 @@ async function fetchAAII(){
              chg4wk:spread4wk!=null?(spread-spread4wk).toFixed(1):null,
              lastUpdate:lastUpdate,
              fetched:new Date().toISOString(),
-             sourceUrl:url};
+             sourceUrl:url,matchedVia};
     return}
-  }catch{continue}}}st.aaii=null}
+  }catch(e){console.log("AAII fetch error for "+url+":",e.message);continue}}}
+ console.warn("AAII: all URLs/proxies/patterns exhausted");
+ st.aaii=null}
 function calcBreadthProxy(){
  /* S&P 500 vs 200-day MA proxy — uses daily FRED SP500 data we already fetch */
  const spx=st.mcFull.sp500||[];if(spx.length<200){st.breadth=null;return}
