@@ -275,71 +275,81 @@ async function fetchAAII(){
     if(m){bull=parseFloat(m[1]);neut=parseFloat(m[2]);bear=parseFloat(m[3]);matchedVia="thisweek"}
    }
 
-   /* QUATERNARY: Combinatorial fallback with scoring.
-      Find ALL "Bullish: X%", "Neutral: X%", "Bearish: X%" occurrences, score each triple,
-      pick the best. Scoring rewards proximity to "this week"/"latest" keywords and
-      penalizes proximity to "average"/"8-week" keywords. Rejects identical duplicates
-      (real weekly readings almost never have two exactly-matching values — these are
-      typically moving averages or statistical bands). */
+   /* QUATERNARY: Date-anchored parsing for structured data tables.
+      AAII /sent_results page is a historical data table — for each date, find the
+      triple (Bull/Neutral/Bear) that FOLLOWS it within a tight window. Pick the
+      triple attached to the most recent date. No fuzzy scoring — unambiguous. */
    if(bull==null||neut==null||bear==null){
     const bullAll=[...h.matchAll(/Bullish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
     const neutAll=[...h.matchAll(/Neutral:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
     const bearAll=[...h.matchAll(/Bearish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
     console.log("AAII fallback: found",bullAll.length,"bull matches,",neutAll.length,"neut,",bearAll.length,"bear");
 
-    /* Find anchor positions of context keywords */
-    const currentKw=[/This week['\u2019]s/gi,/Latest (?:reading|results?|survey|sentiment)/gi,/Current (?:reading|sentiment|results?)/gi,/Reported[:\s]*Date/gi,/Most recent/gi];
-    const avoidKw=[/8[- ]?week/gi,/moving average/gi,/Historical average/gi,/standard deviation/gi,/St\.?\s*Dev/gi,/Avg\s*\+/gi,/Avg\s*-/gi];
-    const currentPositions=[];
-    for(const p of currentKw){for(const m of h.matchAll(p))currentPositions.push(m.index)}
-    const avoidPositions=[];
-    for(const p of avoidKw){for(const m of h.matchAll(p))avoidPositions.push(m.index)}
-
-    const tryMatch=(requireDecimals)=>{
-     let best=null,bestScore=-Infinity;
-     for(const bm of bullAll){
-      if(requireDecimals&&!bm[1].includes('.'))continue;
-      const bv=parseFloat(bm[1]);
-      for(const nm of neutAll){
-       if(requireDecimals&&!nm[1].includes('.'))continue;
-       const nv=parseFloat(nm[1]);
-       if(Math.abs(nm.index-bm.index)>500)continue;
-       for(const zm of bearAll){
-        if(requireDecimals&&!zm[1].includes('.'))continue;
-        const zv=parseFloat(zm[1]);
-        if(Math.abs(zm.index-bm.index)>500)continue;
-        const sum=bv+nv+zv;
-        if(sum<97||sum>103)continue;
-        if(bv===37.5&&nv===31.5&&zv===31.0)continue;/* historical averages */
-        if([0,25,50,75,100].includes(bv)&&[0,25,50,75,100].includes(nv)&&[0,25,50,75,100].includes(zv))continue;
-        if(bv<5||bv>80||zv<5||zv>80||nv<3||nv>80)continue;
-        /* Reject triples with any two identical values — real readings don't duplicate */
-        if(bv===nv||bv===zv||nv===zv)continue;
-        /* Score: closer sum to 100 + proximity to "this week" kw + distance from "avg" kw */
-        let score=10-Math.abs(sum-100)*3;
-        const tripleStart=Math.min(bm.index,nm.index,zm.index);
-        const tripleEnd=Math.max(bm.index,nm.index,zm.index);
-        for(const pos of currentPositions){
-         const dist=Math.min(Math.abs(pos-tripleStart),Math.abs(pos-tripleEnd));
-         if(dist<200)score+=30;else if(dist<500)score+=15;else if(dist<1000)score+=5;
-        }
-        for(const pos of avoidPositions){
-         const dist=Math.min(Math.abs(pos-tripleStart),Math.abs(pos-tripleEnd));
-         if(dist<200)score-=25;else if(dist<500)score-=10;
-        }
-        if(score>bestScore){bestScore=score;best={bull:bv,neut:nv,bear:zv,score}}
-       }
-      }
+    /* Detect all recent dates (within 60 days of today) */
+    const todayMs=Date.now();
+    const recentDates=[];
+    const datePatterns=[
+     /(\d{1,2})\/(\d{1,2})\/(\d{4})/g,
+     /(\d{1,2})\/(\d{1,2})\/(\d{2})(?!\d)/g,
+     /(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})/gi,
+     /(\d{4})-(\d{2})-(\d{2})/g
+    ];
+    for(const pat of datePatterns){
+     for(const m of h.matchAll(pat)){
+      try{
+       const d=new Date(m[0]);
+       if(isNaN(d.getTime()))continue;
+       const diffDays=(todayMs-d.getTime())/(24*3600*1000);
+       /* Must be in the past and within 60 days */
+       if(diffDays<-7||diffDays>60)continue;
+       recentDates.push({pos:m.index,diffDays:Math.abs(diffDays),str:m[0]});
+      }catch(e){continue}
      }
-     return best;
+    }
+    /* Sort by recency (most recent first) */
+    recentDates.sort((a,b)=>a.diffDays-b.diffDays);
+    console.log("AAII recent dates:",recentDates.slice(0,5).map(d=>d.str+" ("+d.diffDays.toFixed(0)+"d ago, pos "+d.pos+")"));
+
+    /* For each date, find the triple that FOLLOWS it in tight sequence: Bull → Neut → Bear */
+    const findTripleAfter=(datePos,requireDecimals)=>{
+     const bm=bullAll.find(m=>m.index>=datePos&&m.index<datePos+300);
+     if(!bm)return null;
+     if(requireDecimals&&!bm[1].includes('.'))return null;
+     const nm=neutAll.find(m=>m.index>=bm.index&&m.index<bm.index+200);
+     if(!nm)return null;
+     if(requireDecimals&&!nm[1].includes('.'))return null;
+     const zm=bearAll.find(m=>m.index>=nm.index&&m.index<nm.index+200);
+     if(!zm)return null;
+     if(requireDecimals&&!zm[1].includes('.'))return null;
+     const bv=parseFloat(bm[1]);const nv=parseFloat(nm[1]);const zv=parseFloat(zm[1]);
+     /* Validate */
+     const sum=bv+nv+zv;
+     if(sum<97||sum>103)return null;
+     if(bv===nv||bv===zv||nv===zv)return null;
+     if(bv<5||bv>80||nv<3||nv>80||zv<5||zv>80)return null;
+     if(bv===37.5&&nv===31.5&&zv===31.0)return null;
+     if([0,25,50,75,100].includes(bv)&&[0,25,50,75,100].includes(nv)&&[0,25,50,75,100].includes(zv))return null;
+     return{bull:bv,neut:nv,bear:zv};
     };
-    /* Pass 1: require decimal precision */
-    let found=tryMatch(true);
-    /* Pass 2: accept integers if no decimal match */
-    if(!found)found=tryMatch(false);
+
+    /* Try each recent date in order of recency */
+    let found=null;
+    for(const dp of recentDates){
+     let t=findTripleAfter(dp.pos,true);
+     if(t){found={...t,dateStr:dp.str,daysAgo:dp.diffDays};break}
+    }
+    /* If no decimal match, fall back to integer match */
+    if(!found){
+     for(const dp of recentDates){
+      let t=findTripleAfter(dp.pos,false);
+      if(t){found={...t,dateStr:dp.str,daysAgo:dp.diffDays};break}
+     }
+    }
     if(found){
-     bull=found.bull;neut=found.neut;bear=found.bear;matchedVia="combinatorial";
-     console.log("AAII combinatorial pick: B="+bull+" N="+neut+" Z="+bear+" sum="+(bull+neut+bear).toFixed(1)+" score="+found.score.toFixed(0));
+     bull=found.bull;neut=found.neut;bear=found.bear;matchedVia="dateAnchored";
+     console.log("AAII date-anchored pick: "+found.dateStr+" B="+bull+" N="+neut+" Z="+bear+" sum="+(bull+neut+bear).toFixed(1));
+    }else{
+     console.log("AAII: no valid triple found anchored to any recent date");
     }
    }
 
