@@ -275,16 +275,28 @@ async function fetchAAII(){
     if(m){bull=parseFloat(m[1]);neut=parseFloat(m[2]);bear=parseFloat(m[3]);matchedVia="thisweek"}
    }
 
-   /* QUATERNARY: Combinatorial fallback.
-      Find ALL "Bullish: X%", "Neutral: X%", "Bearish: X%" occurrences, try each triple,
-      accept first that validates. Two passes: first require decimal precision (real
-      AAII readings always have tenths), then fall back to integers if none found. */
+   /* QUATERNARY: Combinatorial fallback with scoring.
+      Find ALL "Bullish: X%", "Neutral: X%", "Bearish: X%" occurrences, score each triple,
+      pick the best. Scoring rewards proximity to "this week"/"latest" keywords and
+      penalizes proximity to "average"/"8-week" keywords. Rejects identical duplicates
+      (real weekly readings almost never have two exactly-matching values — these are
+      typically moving averages or statistical bands). */
    if(bull==null||neut==null||bear==null){
     const bullAll=[...h.matchAll(/Bullish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
     const neutAll=[...h.matchAll(/Neutral:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
     const bearAll=[...h.matchAll(/Bearish:?\s*([\d]+(?:\.[\d]+)?)\s*%/gi)];
     console.log("AAII fallback: found",bullAll.length,"bull matches,",neutAll.length,"neut,",bearAll.length,"bear");
+
+    /* Find anchor positions of context keywords */
+    const currentKw=[/This week['\u2019]s/gi,/Latest (?:reading|results?|survey|sentiment)/gi,/Current (?:reading|sentiment|results?)/gi,/Reported[:\s]*Date/gi,/Most recent/gi];
+    const avoidKw=[/8[- ]?week/gi,/moving average/gi,/Historical average/gi,/standard deviation/gi,/St\.?\s*Dev/gi,/Avg\s*\+/gi,/Avg\s*-/gi];
+    const currentPositions=[];
+    for(const p of currentKw){for(const m of h.matchAll(p))currentPositions.push(m.index)}
+    const avoidPositions=[];
+    for(const p of avoidKw){for(const m of h.matchAll(p))avoidPositions.push(m.index)}
+
     const tryMatch=(requireDecimals)=>{
+     let best=null,bestScore=-Infinity;
      for(const bm of bullAll){
       if(requireDecimals&&!bm[1].includes('.'))continue;
       const bv=parseFloat(bm[1]);
@@ -301,19 +313,33 @@ async function fetchAAII(){
         if(bv===37.5&&nv===31.5&&zv===31.0)continue;/* historical averages */
         if([0,25,50,75,100].includes(bv)&&[0,25,50,75,100].includes(nv)&&[0,25,50,75,100].includes(zv))continue;
         if(bv<5||bv>80||zv<5||zv>80||nv<3||nv>80)continue;
-        return{bull:bv,neut:nv,bear:zv};
+        /* Reject triples with any two identical values — real readings don't duplicate */
+        if(bv===nv||bv===zv||nv===zv)continue;
+        /* Score: closer sum to 100 + proximity to "this week" kw + distance from "avg" kw */
+        let score=10-Math.abs(sum-100)*3;
+        const tripleStart=Math.min(bm.index,nm.index,zm.index);
+        const tripleEnd=Math.max(bm.index,nm.index,zm.index);
+        for(const pos of currentPositions){
+         const dist=Math.min(Math.abs(pos-tripleStart),Math.abs(pos-tripleEnd));
+         if(dist<200)score+=30;else if(dist<500)score+=15;else if(dist<1000)score+=5;
+        }
+        for(const pos of avoidPositions){
+         const dist=Math.min(Math.abs(pos-tripleStart),Math.abs(pos-tripleEnd));
+         if(dist<200)score-=25;else if(dist<500)score-=10;
+        }
+        if(score>bestScore){bestScore=score;best={bull:bv,neut:nv,bear:zv,score}}
        }
       }
      }
-     return null;
+     return best;
     };
-    /* Pass 1: require decimal precision (real AAII readings) */
+    /* Pass 1: require decimal precision */
     let found=tryMatch(true);
-    /* Pass 2: accept integers if no decimal matches found */
+    /* Pass 2: accept integers if no decimal match */
     if(!found)found=tryMatch(false);
     if(found){
      bull=found.bull;neut=found.neut;bear=found.bear;matchedVia="combinatorial";
-     console.log("AAII combinatorial match: B="+bull+" N="+neut+" Z="+bear+" sum="+(bull+neut+bear).toFixed(1));
+     console.log("AAII combinatorial pick: B="+bull+" N="+neut+" Z="+bear+" sum="+(bull+neut+bear).toFixed(1)+" score="+found.score.toFixed(0));
     }
    }
 
