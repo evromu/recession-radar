@@ -65,10 +65,13 @@ function clamp(v){return Math.max(0,Math.min(100,v))}
    MARKET SIGNAL: VIX 40% (hybrid z-score, MA10 gate, proportional override)
      + CAPE 25% (ECY softener with 3 inflation/rate gates) + Sentiment 35%
      + AAII Capitulation additive bonus (-0.5 when Bear>50 + 30d trough DD>7%)
+   REFERENCE PANEL: CNN Fear & Greed, AAII sentiment, EPU (display only — no
+     composite feed to avoid double-counting overlapping components)
    v17.5: AAII parser via Jina Reader (r.jina.ai) for JS-rendered pages.
      Capitulation refined: DD threshold 10%→7%, uses 30-day trough close (not
      current close) to capture recent stress depth. 9/9 historical fires,
      100% hit rate, +23.9% avg fwd 12mo. Properly catches Apr 2026 event.
+     Added CNN Fear & Greed Index via official JSON API (production.dataviz.cnn.io).
 ═══════════════════════════════════════════════════════ */
 const SIG_LEVELS=[{v:-3,label:"STRONG BUY",short:"STR BUY",color:"#00E676",bg:"rgba(0,230,118,.12)"},{v:-2,label:"BUY",short:"BUY",color:"#00C853",bg:"rgba(0,200,83,.10)"},{v:-1,label:"SOFT BUY",short:"SOFT BUY",color:"#66BB6A",bg:"rgba(102,187,106,.08)"},{v:0,label:"HOLD",short:"HOLD",color:"#78909C",bg:"rgba(120,144,156,.08)"},{v:1,label:"SOFT SELL",short:"SOFT SELL",color:"#FFC107",bg:"rgba(255,193,7,.10)"},{v:2,label:"SELL",short:"SELL",color:"#FF9100",bg:"rgba(255,145,0,.10)"},{v:3,label:"STRONG SELL",short:"STR SELL",color:"#FF1744",bg:"rgba(255,23,68,.12)"}];
 function sigLevel(v){return SIG_LEVELS.find(l=>l.v===Math.max(-3,Math.min(3,Math.round(v))))||SIG_LEVELS[3]}
@@ -252,6 +255,42 @@ async function fetchCAPE(){
  st.cape=null;st.capeSource=null;st.capeFreshness=null}
 async function fetchCAPEHist(){try{const url="https://www.multpl.com/shiller-pe/table/by-month";const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const h=await r.text();const rows=[];const re=/<tr[^>]*>\s*<td[^>]*>([^<]+)<\/td>\s*<td[^>]*>([\d.]+)<\/td>/gi;let m;while((m=re.exec(h))!==null){const d=new Date(m[1].trim());const v=parseFloat(m[2]);if(!isNaN(d)&&v>3)rows.push({month:d.toISOString().substring(0,7),value:v})}if(rows.length>12)return rows}catch{continue}}}catch{}return[]}
 async function fetchCLF(){try{const clf=await ff("CLF16OV",st.key,3);if(clf.length){st.clfRaw=parseFloat(clf[clf.length-1].value);const claims=st.d.ic||[];if(claims.length>=4&&st.clfRaw){const l4=claims.slice(-4).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));st.claims4wk=l4.reduce((a,b)=>a+b,0)/l4.length;st.clfRatio=st.claims4wk/st.clfRaw}}}catch{}}
+async function fetchFearGreed(){
+ /* CNN Fear & Greed Index — official JSON API endpoint (no scraping needed).
+    Returns current score (0-100), rating, and 1d/1wk/1mo/1yr historical values.
+    Server-rendered JSON; callable via CORS proxy rotation like FRED. */
+ const url="https://production.dataviz.cnn.io/index/fearandgreed/graphdata";
+ const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];
+ for(const i of ord){
+  try{
+   const r=await fetch(PX[i](url),{signal:AbortSignal.timeout(12000)});
+   if(!r.ok)continue;
+   const txt=await r.text();
+   let j;
+   try{j=JSON.parse(txt)}catch{
+    /* allorigins wraps in {contents:"..."} */
+    try{const p=JSON.parse(txt);if(p.contents)j=JSON.parse(p.contents)}catch{continue}
+   }
+   if(!j||!j.fear_and_greed)continue;
+   const fg=j.fear_and_greed;
+   if(typeof fg.score!=="number")continue;
+   st.fg={
+    score:fg.score,
+    rating:fg.rating,
+    timestamp:fg.timestamp,
+    prevClose:fg.previous_close,
+    prevWeek:fg.previous_1_week,
+    prevMonth:fg.previous_1_month,
+    prevYear:fg.previous_1_year,
+    fetched:new Date().toISOString()
+   };
+   console.log("CNN F&G: "+fg.score.toFixed(1)+" ("+fg.rating+")");
+   return;
+  }catch(e){continue}
+ }
+ console.warn("CNN Fear & Greed: all proxies failed");
+ st.fg=null;
+}
 async function fetchAAII(){
  /* Strategy: Jina Reader (r.jina.ai) renders JS pages in a headless browser and
     returns clean text. Works for SPAs where basic CORS proxies return only shells.
@@ -460,8 +499,8 @@ async function loadAll(){st.ld=true;st.err=null;render();let ok=0,fl=[],mcOk=0,m
  calcVixRolling();
  /* S&P health proxy (breadth replacement) */
  calcBreadthProxy();
- /* AAII Investor Sentiment (scraped) */
- await Promise.allSettled([fetchAAII()]);
+ /* AAII Investor Sentiment (scraped) + CNN Fear & Greed (JSON API) */
+ await Promise.allSettled([fetchAAII(),fetchFearGreed()]);
  if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else st.d.cape=[];
  for(const s of S){const obs=st.d[s.k]||[];if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}if(s.tr){const v=obs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));st.ss[s.k]=s.ev(null,v.length>=2?v[v.length-1]-v[0]:null)}else{let l=obs.length?parseFloat(obs[obs.length-1].value):null;if(s.divK&&l)l=l/1000;st.ss[s.k]=s.ev(isNaN(l)?null:l)}}
  st.al={...analyzeYC(st.d.yc||[]),...analyzeSahm(st.d.sa||[])};st.upd=new Date();
@@ -760,11 +799,79 @@ function render(){const a=document.getElementById("app");
    ${mom.abvMA!=null?`<div class="msp-ind-card" style="border-color:${mom.bearRegime?'var(--st)30':'var(--cl)30'}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">Regime <span style="color:var(--t5)">GATE</span></span><span class="m" style="font-size:10px;font-weight:800;color:${mom.bearRegime?'var(--st)':'var(--cl)'}">${mom.bearRegime?'BEAR ⚠':'NORMAL'}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">S&P ${mom.current} ${mom.abvMA?'above':'below'} 10mo MA (${mom.ma})<span style="color:${mom.abvMA?'var(--cl)':'var(--wn)'}"> · Gate ${mom.abvMA?'OPEN ✓':'CLOSED ✗'}</span></div>${mom.drawdown!=null?`<div style="font-size:9px;color:var(--t4);margin-top:4px">${mom.drawdown}% from 12mo high${mom.bearRegime?' · Sent dampened · +0.3 tilt':''}</div>`:''}</div>`:''}
   </div></div>
  ${(()=>{
-  /* AAII Investor Sentiment + EPU Reference panel */
-  const aa=st.aaii;
+  /* CNN Fear & Greed + AAII Investor Sentiment + EPU Reference panel */
+  const aa=st.aaii;const fg=st.fg;
   const epuObs=st.d.epu||[];const epuVal=epuObs.length?parseFloat(epuObs[epuObs.length-1].value):null;
-  if(!aa&&epuVal==null)return"";
-  let h='<div class="aaii-breadth" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">';
+  if(!aa&&epuVal==null&&!fg)return"";
+  let h="";
+  /* CNN Fear & Greed — full width primary sentiment gauge */
+  if(fg){
+   const score=fg.score;
+   /* Color zones: 0-24 extreme fear (green/contrarian buy), 25-44 fear (teal),
+      45-55 neutral (grey), 56-75 greed (amber), 76-100 extreme greed (red) */
+   const zone=score<25?{c:"var(--cl)",bg:"rgba(0,230,118,.10)",bd:"rgba(0,230,118,.25)",icon:"🟢",label:"EXTREME FEAR",note:"Contrarian bullish zone — historically associated with market bottoms."}
+              :score<45?{c:"#66BB6A",bg:"rgba(102,187,106,.08)",bd:"rgba(102,187,106,.20)",icon:"🟢",label:"FEAR",note:"Elevated caution among investors."}
+              :score<=55?{c:"var(--t3)",bg:"rgba(120,144,156,.08)",bd:"rgba(120,144,156,.20)",icon:"⚖️",label:"NEUTRAL",note:"Balanced sentiment — market at equilibrium."}
+              :score<=75?{c:"var(--ca)",bg:"rgba(255,193,7,.08)",bd:"rgba(255,193,7,.20)",icon:"🟡",label:"GREED",note:"Investors bullish — watch for complacency."}
+              :{c:"var(--st)",bg:"rgba(255,23,68,.10)",bd:"rgba(255,23,68,.25)",icon:"🔴",label:"EXTREME GREED",note:"Contrarian bearish zone — historically associated with tops."};
+   const chg=(a,b)=>b==null?null:(a-b);
+   const dWeek=chg(score,fg.prevWeek),dMonth=chg(score,fg.prevMonth),dYear=chg(score,fg.prevYear);
+   const arrow=d=>d==null?"":d>0.5?"▲":d<-0.5?"▼":"▬";
+   const clr=d=>d==null?"var(--t4)":d>5?"var(--cl)":d<-5?"var(--st)":"var(--t3)";
+   const fmtDelta=d=>d==null?"—":(d>0?"+":"")+d.toFixed(0);
+   const updateStr=fg.timestamp?new Date(fg.timestamp).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Daily";
+   /* Meter position: 0-100 maps to 0-100% along bar */
+   const meterPct=Math.max(0,Math.min(100,score));
+   h+=`<div style="background:var(--sf);border:1px solid ${zone.bd};border-radius:10px;padding:14px 16px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+     <span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">CNN FEAR &amp; GREED INDEX</span>
+     <span class="m" style="font-size:8px;color:var(--t4)">${updateStr}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+     <div>
+      <span class="m" style="font-size:28px;font-weight:800;color:${zone.c};line-height:1">${score.toFixed(0)}</span>
+      <span class="m" style="font-size:10px;color:var(--t4);margin-left:6px">/100</span>
+     </div>
+     <div style="text-align:right">
+      <div class="m" style="font-size:11px;font-weight:800;color:${zone.c}">${zone.icon} ${zone.label}</div>
+      ${fg.prevClose!=null?`<div class="m" style="font-size:9px;color:var(--t4);margin-top:2px">Prev close: ${fg.prevClose.toFixed(0)}</div>`:""}
+     </div>
+    </div>
+    <!-- Gradient meter -->
+    <div style="position:relative;height:8px;border-radius:4px;margin-bottom:4px;background:linear-gradient(to right,#00E676 0%,#66BB6A 25%,#78909C 45%,#78909C 55%,#FFC107 75%,#FF1744 100%)">
+     <div style="position:absolute;left:${meterPct}%;top:-4px;width:2px;height:16px;background:var(--tx);border-radius:1px;transform:translateX(-1px);box-shadow:0 0 4px rgba(0,0,0,.5)"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--t5);margin-bottom:10px">
+     <span>0 Fear</span><span>50 Neutral</span><span>100 Greed</span>
+    </div>
+    <!-- Historical context -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+     <div style="background:rgba(0,0,0,.2);border-radius:4px;padding:6px 4px;text-align:center">
+      <div class="m" style="font-size:7px;color:var(--t4)">1 WEEK AGO</div>
+      <div class="m" style="font-size:12px;font-weight:800;color:var(--t2)">${fg.prevWeek!=null?fg.prevWeek.toFixed(0):"—"}</div>
+      <div class="m" style="font-size:8px;color:${clr(dWeek)}">${arrow(dWeek)} ${fmtDelta(dWeek)}</div>
+     </div>
+     <div style="background:rgba(0,0,0,.2);border-radius:4px;padding:6px 4px;text-align:center">
+      <div class="m" style="font-size:7px;color:var(--t4)">1 MONTH AGO</div>
+      <div class="m" style="font-size:12px;font-weight:800;color:var(--t2)">${fg.prevMonth!=null?fg.prevMonth.toFixed(0):"—"}</div>
+      <div class="m" style="font-size:8px;color:${clr(dMonth)}">${arrow(dMonth)} ${fmtDelta(dMonth)}</div>
+     </div>
+     <div style="background:rgba(0,0,0,.2);border-radius:4px;padding:6px 4px;text-align:center">
+      <div class="m" style="font-size:7px;color:var(--t4)">1 YEAR AGO</div>
+      <div class="m" style="font-size:12px;font-weight:800;color:var(--t2)">${fg.prevYear!=null?fg.prevYear.toFixed(0):"—"}</div>
+      <div class="m" style="font-size:8px;color:${clr(dYear)}">${arrow(dYear)} ${fmtDelta(dYear)}</div>
+     </div>
+    </div>
+    <div style="padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
+     <div style="font-size:10px;color:#888;line-height:1.6">${zone.note} CNN's composite of 7 market signals (VIX, momentum, junk bond demand, put/call, stock strength, breadth, safe-haven demand). Best used as contrarian: extreme fear often marks bottoms, extreme greed often marks tops.</div>
+     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <span class="m" style="font-size:8px;color:var(--t5)">Display only — components overlap Recession Radar (VIX, credit spreads, momentum).</span>
+      <a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">cnn.com →</a>
+     </div>
+    </div>
+   </div>`;
+  }
+  h+='<div class="aaii-breadth" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">';
   if(aa){const spread=parseFloat(aa.spread);
    const bearExt=aa.bear>45;const bullExt=aa.bull>50;
    let extLabel="",extColor="var(--t3)",extIcon="⚖️";
@@ -907,7 +1014,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v17.5</strong>: AAII scraping via Jina Reader. Capitulation DD refined — 30d trough vs peak, threshold 7% (9/9 historical fires).<br>
+ <strong style="color:var(--t4)">v17.5</strong>: AAII scraping via Jina Reader. Capitulation DD refined — 30d trough vs peak, threshold 7% (9/9 historical fires). CNN Fear &amp; Greed Index added as reference gauge.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
@@ -917,7 +1024,7 @@ function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}els
 function toggleBT(){st.bt.open=!st.bt.open;render()}
 function togOv(k){st.bt.ov[k]=!st.bt.ov[k];render()}
 function setWindow(w){st.bt.window=w;render();setTimeout(bindBTChart,120)}
-function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.momentum=null;st.aaii=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
+function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.momentum=null;st.aaii=null;st.fg=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
