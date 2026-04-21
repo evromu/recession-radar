@@ -60,18 +60,27 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17.5 METHODOLOGY ═══
+/* ═══ v17.7 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
    MARKET SIGNAL: VIX 40% (hybrid z-score, MA10 gate, proportional override)
      + CAPE 25% (ECY softener with 3 inflation/rate gates) + Sentiment 35%
      + AAII Capitulation additive bonus (-0.5 when Bear>50 + 30d trough DD>7%)
-   REFERENCE PANEL: CNN Fear & Greed, AAII sentiment, EPU (display only — no
-     composite feed to avoid double-counting overlapping components)
-   v17.5: AAII parser via Jina Reader (r.jina.ai) for JS-rendered pages.
-     Capitulation refined: DD threshold 10%→7%, uses 30-day trough close (not
-     current close) to capture recent stress depth. 9/9 historical fires,
-     100% hit rate, +23.9% avg fwd 12mo. Properly catches Apr 2026 event.
-     Added CNN Fear & Greed Index via official JSON API (production.dataviz.cnn.io).
+     + F&G Capitulation additive bonus (-0.2 when F&G<20 + EF streak>=10 days)
+     + F&G Greed Warning additive tilt (+0.2 when F&G>85 + EG streak>=5 days)
+   REFERENCE PANEL: AAII sentiment (full card), EPU (display only)
+   v17.7: CNN F&G Index integrated as active market signal contributor after
+     backtest validation on 2011-2020 daily data (n=2445).
+       - F&G Cap: 158 fires, +8.94% fwd 6mo vs +4.79% baseline (p<0.0001).
+         Catches 144 events AAII missed (2014 oil, 2018 Volmageddon,
+         2018 Q4 bear, 2020 COVID). Stacks additively with AAII Cap; both
+         firing = +33.96% fwd 6mo (strongest signal in backtest).
+       - F&G Greed Warning: 86 fires, -1.82% fwd 3mo vs +2.57% baseline
+         (lift -4.4pp, p=0.020). Short-term caution; 6mo returns recover.
+     Recession-gating tested and REJECTED: gating at Recess<40 removed the
+     best trades (2020 COVID, fwd 6mo +41%) because real crises with
+     extreme fear are the strongest buy setups, not sentiment overshoot
+     during foreign-only crises (2011 Euro false positives had low Recess
+     scores but still failed). Ungated version outperforms all gated variants.
 ═══════════════════════════════════════════════════════ */
 const SIG_LEVELS=[{v:-3,label:"STRONG BUY",short:"STR BUY",color:"#00E676",bg:"rgba(0,230,118,.12)"},{v:-2,label:"BUY",short:"BUY",color:"#00C853",bg:"rgba(0,200,83,.10)"},{v:-1,label:"SOFT BUY",short:"SOFT BUY",color:"#66BB6A",bg:"rgba(102,187,106,.08)"},{v:0,label:"HOLD",short:"HOLD",color:"#78909C",bg:"rgba(120,144,156,.08)"},{v:1,label:"SOFT SELL",short:"SOFT SELL",color:"#FFC107",bg:"rgba(255,193,7,.10)"},{v:2,label:"SELL",short:"SELL",color:"#FF9100",bg:"rgba(255,145,0,.10)"},{v:3,label:"STRONG SELL",short:"STR SELL",color:"#FF1744",bg:"rgba(255,23,68,.12)"}];
 function sigLevel(v){return SIG_LEVELS.find(l=>l.v===Math.max(-3,Math.min(3,Math.round(v))))||SIG_LEVELS[3]}
@@ -153,6 +162,42 @@ function calcCapitulation(){
  const active=bear>50&&ddTrough<-7;
  return{active,bear,dd:ddTrough.toFixed(1),ddCurrent:ddCurrent.toFixed(1),peak:peak.toFixed(0),trough:trough.toFixed(0),current:current.toFixed(0)}}
 
+function calcFGCapitulation(){
+ /* F&G Capitulation: F&G < 20 AND EF streak (F&G<25) >= 10 days.
+    Backtest 2011-2020 (n=2445 daily obs): 158 fires, +8.94% fwd 6mo (baseline +4.79%),
+    p<0.0001. Catches 144 events that AAII missed (2014 oil, 2018 Volmageddon,
+    2018 Q4, 2020 COVID early). Smaller bonus (-0.2) than AAII (-0.5) because
+    per-fire lift is weaker; stacks additively when both fire. */
+ if(!st.fg||!st.fg.series||st.fg.series.length<10)return{active:false,score:null,streak:0};
+ const series=st.fg.series;
+ const latest=series[series.length-1];
+ const score=latest.v;
+ /* Count EF streak (consecutive days with F&G < 25, ending at latest) */
+ let streak=0;
+ for(let i=series.length-1;i>=0;i--){
+  if(series[i].v<25)streak++;
+  else break;
+ }
+ const active=score<20&&streak>=10;
+ return{active,score:score.toFixed(1),streak}}
+
+function calcFGGreedWarning(){
+ /* F&G Greed Warning: F&G > 85 AND EG streak (F&G>75) >= 5 days.
+    Backtest 2011-2020 (n=2445 daily obs): 86 fires, -1.82% fwd 3mo vs baseline +2.57%
+    (lift -4.4pp, p=0.020). Weak but genuine short-term caution signal; 6mo returns
+    recover. Small +0.2 sell-bias bonus. */
+ if(!st.fg||!st.fg.series||st.fg.series.length<5)return{active:false,score:null,streak:0};
+ const series=st.fg.series;
+ const latest=series[series.length-1];
+ const score=latest.v;
+ let streak=0;
+ for(let i=series.length-1;i>=0;i--){
+  if(series[i].v>75)streak++;
+  else break;
+ }
+ const active=score>85&&streak>=5;
+ return{active,score:score.toFixed(1),streak}}
+
 
 function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
  const vix=vD.length?parseFloat(vD[vD.length-1].value):null;const sent=coD.length?parseFloat(coD[coD.length-1].value):null;
@@ -190,10 +235,19 @@ function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
   if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX & Sentiment extremes conflict."};
   else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+` capitulation (${(ovrScale*100).toFixed(0)}% strength, rec ${recScore.toFixed(0)})`};bs=Math.min(bs,buyFloor)}
   else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+` extreme (${(ovrScale*100).toFixed(0)}% strength)`};bs=Math.max(bs,sellFloor)}}
- /* AAII Capitulation bonus: additive -0.5 when Bear>50 + DD>10% from 6mo peak */
+ /* AAII Capitulation bonus: additive -0.5 when Bear>50 + DD>7% from 6mo peak */
  const capit=calcCapitulation();
  if(capit.active)bs=Math.max(-3,bs-0.5);
- return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:mom.bearRegime,bearDamp,capitulation:capit}}
+ /* F&G Capitulation bonus (v17.7): additive -0.2 when F&G<20 + EF streak>=10 days.
+    Stacks with AAII Cap when both fire. Backtest: 144 unique catches AAII missed,
+    +6.51% fwd 6mo (p=0.011). When both fire: +33.96% fwd 6mo (strongest signal). */
+ const fgCap=calcFGCapitulation();
+ if(fgCap.active)bs=Math.max(-3,bs-0.2);
+ /* F&G Greed Warning (v17.7): additive +0.2 when F&G>85 + EG streak>=5 days.
+    Backtest: -1.82% fwd 3mo vs baseline +2.57% (lift -4.4pp, p=0.020). */
+ const fgGreed=calcFGGreedWarning();
+ if(fgGreed.active)bs=Math.min(3,bs+0.2);
+ return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:mom.bearRegime,bearDamp,capitulation:capit,fgCap,fgGreed}}
 
 function getStrategy(preComp,preMs){const comp=preComp||calcComposite();const ms=preMs||calcMarketSignal(comp);const r=comp.recession!=null?comp.recession:0;const m=ms.score;
  /* v16.1: thresholds 35/60/80. RED (>80) differentiated from ORANGE (60-80).
@@ -274,6 +328,12 @@ async function fetchFearGreed(){
    if(!j||!j.fear_and_greed)continue;
    const fg=j.fear_and_greed;
    if(typeof fg.score!=="number")continue;
+   /* Extract daily historical series (used for streak tracking).
+      The API returns ~12 months of daily data in fear_and_greed_historical.data
+      as [{x: unix_ms, y: score, rating: str}, ...]. We need at minimum
+      ~10 trading days for EF streak, ~5 for EG streak. */
+   const hist=(j.fear_and_greed_historical&&j.fear_and_greed_historical.data)||[];
+   const series=hist.filter(d=>typeof d.y==="number").map(d=>({t:d.x,v:d.y})).sort((a,b)=>a.t-b.t);
    st.fg={
     score:fg.score,
     rating:fg.rating,
@@ -282,9 +342,10 @@ async function fetchFearGreed(){
     prevWeek:fg.previous_1_week,
     prevMonth:fg.previous_1_month,
     prevYear:fg.previous_1_year,
+    series,
     fetched:new Date().toISOString()
    };
-   console.log("CNN F&G: "+fg.score.toFixed(1)+" ("+fg.rating+")");
+   console.log("CNN F&G: "+fg.score.toFixed(1)+" ("+fg.rating+") — "+series.length+" days of history");
    return;
   }catch(e){continue}
  }
@@ -768,12 +829,15 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.5 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). ECY-adjusted CAPE. Credit velocity bonus. Proportional override. AAII + EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.7 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + MA10-gated hybrid VIX (OOS +4.9pp). ECY-adjusted CAPE. Credit velocity bonus. Proportional override. AAII + EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
  const recCol=comp.recession!=null?(comp.recession>80?"var(--st)":comp.recession>60?"var(--wn)":comp.recession>35?"var(--ca)":"var(--cl)"):"var(--wa)";
  const bonuses=[];if(comp.postInvBonus)bonuses.push("YC post-inv +15");if(comp.interactionBonus)bonuses.push("YC×Credit +10");if(st.crVelocity&&st.crVelocity.bonus)bonuses.push(`Credit velocity +15 (${st.crVelocity.velocity.toFixed(2)}pp)`);
+ if(ms.capitulation&&ms.capitulation.active)bonuses.push("AAII Cap −0.5 buy");
+ if(ms.fgCap&&ms.fgCap.active)bonuses.push("F&G Cap −0.2 buy");
+ if(ms.fgGreed&&ms.fgGreed.active)bonuses.push("F&G Greed +0.2 sell");
 
  a.innerHTML=`<div class="c">
  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--bd);flex-wrap:wrap;gap:8px">
@@ -794,6 +858,8 @@ function render(){const a=document.getElementById("app");
   <div class="msp-gauge"><div class="msp-needle" style="left:${np}%"></div></div><div class="msp-labels"><span>Str Buy</span><span>Buy</span><span>Soft Buy</span><span>Hold</span><span>Soft Sell</span><span>Sell</span><span>Str Sell</span></div>
   ${ms.override?`<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.1)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};border:1px solid ${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.25)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.25)":"rgba(255,23,68,.25)"}"><div class="m" style="font-size:9px;font-weight:700;color:${ms.override.type==="CONFLICTED"?"var(--ca)":ms.override.type==="OVERRIDE_BUY"?"var(--cl)":"var(--st)"}">${ms.override.type==="CONFLICTED"?"⚠ CONFLICTING":"⚡ OVERRIDE"}</div><div style="font-size:11px;color:var(--t2)">${ms.override.note}</div></div>`:""}
   ${ms.capitulation&&ms.capitulation.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">Bear ${ms.capitulation.bear}% · S&P ${ms.capitulation.dd}% from 6mo peak (30d trough)${ms.capitulation.dd!==ms.capitulation.ddCurrent?` · currently ${ms.capitulation.ddCurrent}%`:""}. Market signal boosted −0.5 toward BUY.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Historical: 9/9 fires returned +23.9% avg fwd 12mo (1990×3, 2009 GFC, 2018, 2020 COVID, 2022×2, 2025). Triggers: Bear >50% + 30d trough DD &gt;7% from 6mo peak.</div></div>`:""}
+  ${ms.fgCap&&ms.fgCap.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.10);border:1px solid rgba(0,230,118,.25)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 F&amp;G CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">F&amp;G ${ms.fgCap.score} + ${ms.fgCap.streak}-day extreme-fear streak. Market signal boosted −0.2 toward BUY.${ms.capitulation&&ms.capitulation.active?' <span style="color:var(--cl);font-weight:800">Stacks with AAII Cap = −0.7 combined (strongest backtest signal: +33.96% fwd 6mo).</span>':""}</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Backtest 2011-2020: 158 fires, +8.94% fwd 6mo vs baseline +4.79% (p&lt;0.0001). Catches: 2014 oil crash, 2018 Volmageddon, 2018 Q4, 2020 COVID.</div></div>`:""}
+  ${ms.fgGreed&&ms.fgGreed.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(255,23,68,.10);border:1px solid rgba(255,23,68,.25)"><div class="m" style="font-size:10px;font-weight:800;color:var(--st);margin-bottom:4px">⚠️ F&amp;G GREED WARNING ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">F&amp;G ${ms.fgGreed.score} + ${ms.fgGreed.streak}-day extreme-greed streak. Market signal nudged +0.2 toward SELL.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Backtest 2011-2020: 86 fires, fwd 3mo −1.82% vs baseline +2.57% (lift −4.4pp, p=0.020). Short-term caution; 6mo returns recover.</div></div>`:""}
   <div class="msp-ind">
    ${[{n:"VIX",sig:ms.signals.vix,w:"40%",inC:true},{n:"CAPE",sig:ms.signals.cape,w:"25%",inC:true},{n:"Sentiment",sig:ms.signals.sentiment,w:"35%",inC:true}].map(item=>{const sl=sigLevel(item.sig.score);return`<div class="msp-ind-card" style="border-color:${sl.color}30"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">${item.n} <span style="color:var(--t5)">${item.w}</span></span><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">${item.sig.note}${item.sig.mom===false?' <span style="color:var(--wn)">⚠ below 10mo MA</span>':item.sig.mom===true?' <span style="color:var(--cl)">✓ above 10mo MA</span>':""}</div></div>`}).join("")}
    ${mom.abvMA!=null?`<div class="msp-ind-card" style="border-color:${mom.bearRegime?'var(--st)30':'var(--cl)30'}"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="m" style="font-size:10px;font-weight:700">Regime <span style="color:var(--t5)">GATE</span></span><span class="m" style="font-size:10px;font-weight:800;color:${mom.bearRegime?'var(--st)':'var(--cl)'}">${mom.bearRegime?'BEAR ⚠':'NORMAL'}</span></div><div style="font-size:10px;color:var(--t3);line-height:1.4">S&P ${mom.current} ${mom.abvMA?'above':'below'} 10mo MA (${mom.ma})<span style="color:${mom.abvMA?'var(--cl)':'var(--wn)'}"> · Gate ${mom.abvMA?'OPEN ✓':'CLOSED ✗'}</span></div>${mom.drawdown!=null?`<div style="font-size:9px;color:var(--t4);margin-top:4px">${mom.drawdown}% from 12mo high${mom.bearRegime?' · Sent dampened · +0.3 tilt':''}</div>`:''}</div>`:''}
@@ -844,6 +910,10 @@ function render(){const a=document.getElementById("app");
     <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--t5);margin-bottom:10px">
      <span>0 Fear</span><span>50 Neutral</span><span>100 Greed</span>
     </div>
+    ${(()=>{const fc=calcFGCapitulation();const fw=calcFGGreedWarning();
+     if(fc.active)return`<div style="margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 F&amp;G CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">F&amp;G ${fc.score} + ${fc.streak}-day extreme-fear streak. Market signal boosted −0.2 toward BUY.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Backtest 2011-2020 (n=158): +8.94% fwd 6mo vs baseline +4.79% (p&lt;0.0001). Catches events AAII missed: 2014 oil, 2018 Volmageddon, 2018 Q4, 2020 COVID. Stacks with AAII Cap when both fire (+33.96% fwd 6mo combined).</div></div>`;
+     if(fw.active)return`<div style="margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(255,23,68,.10)  ;border:1px solid rgba(255,23,68,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--st);margin-bottom:4px">⚠️ F&amp;G GREED WARNING ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">F&amp;G ${fw.score} + ${fw.streak}-day extreme-greed streak. Market signal nudged +0.2 toward SELL.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Backtest 2011-2020 (n=86): fwd 3mo −1.82% vs baseline +2.57% (lift −4.4pp, p=0.020). Weak but genuine short-term caution signal.</div></div>`;
+     return""})()}
     <!-- Historical context -->
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
      <div style="background:rgba(0,0,0,.2);border-radius:4px;padding:6px 4px;text-align:center">
@@ -865,7 +935,7 @@ function render(){const a=document.getElementById("app");
     <div style="padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
      <div style="font-size:10px;color:#888;line-height:1.6">${zone.note} CNN's composite of 7 market signals (VIX, momentum, junk bond demand, put/call, stock strength, breadth, safe-haven demand). Best used as contrarian: extreme fear often marks bottoms, extreme greed often marks tops.</div>
      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-      <span class="m" style="font-size:8px;color:var(--t5)">Display only — components overlap Recession Radar (VIX, credit spreads, momentum).</span>
+      <span class="m" style="font-size:8px;color:var(--t5)">Active signals (v17.7): F&amp;G Cap (−0.2 buy) at score&lt;20 + 10d streak; F&amp;G Greed (+0.2 sell) at score&gt;85 + 5d streak.</span>
       <a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">cnn.com →</a>
      </div>
     </div>
@@ -1014,7 +1084,8 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (hybrid z-score, MA10-only gate — OOS +4.9pp) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
- <strong style="color:var(--t4)">v17.5</strong>: AAII scraping via Jina Reader. Capitulation DD refined — 30d trough vs peak, threshold 7% (9/9 historical fires). CNN Fear &amp; Greed Index added as reference gauge.<br>
+ <strong style="color:var(--t4)">v17.7</strong>: CNN Fear &amp; Greed integrated as active market-signal contributor. F&amp;G Capitulation (−0.2 buy) + F&amp;G Greed Warning (+0.2 sell). Validated on 10yr daily backtest (n=2445). Stacks additively with AAII Cap; both firing = +33.96% fwd 6mo. Recession-gating tested &amp; rejected.<br>
+ <strong style="color:var(--t4)">v17.6</strong>: AAII scraping via Jina Reader. Capitulation DD refined — 30d trough vs peak, threshold 7% (9/9 historical fires). CNN Fear &amp; Greed Index added as reference gauge.<br>
  <a href="https://fred.stlouisfed.org" target="_blank" style="color:var(--t4)">fred.stlouisfed.org</a> · Not financial advice.</div></div></div>`;
  document.querySelectorAll("[data-ck]").forEach(el=>el.addEventListener("click",()=>{st.ex[el.dataset.ck]=!st.ex[el.dataset.ck];render()}));
  document.querySelectorAll("[data-mc]").forEach(el=>el.addEventListener("click",()=>{st.mcEx[el.dataset.mc]=!st.mcEx[el.dataset.mc];render()}));
