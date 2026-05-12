@@ -60,15 +60,24 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17.9 METHODOLOGY ═══
+/* ═══ v17.10 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
-   MARKET SIGNAL: VIX 40% (Hybrid F symmetric architecture, see below)
-     + CAPE 25% (ECY softener with 3 inflation/rate gates) + Sentiment 35%
-     + AAII Capitulation additive bonus (-0.5 when Bear>50 + 30d trough DD>7%)
-     + F&G Capitulation additive bonus (-0.2 when F&G<20 + EF streak>=10 days)
-     + F&G Greed Warning additive tilt (+0.2 when F&G>85 + EG streak>=5 days)
-   REFERENCE: F&G (full card, top), AAII (full card, in Market Signals tier),
+   MARKET SIGNAL: VIX 40% + CAPE 25% + Sentiment 35%
+     + AAII/F&G capitulation/greed bonuses (see v17.7-8)
+   REFERENCE: F&G (full card with 7-indicator breakdown, collapsible),
+              AAII (full card, in Market Signals tier),
+              Employment Context (federal/state+local jobs, collapsible),
               EPU (Policy Uncertainty card, display only)
+   v17.10: UX refinements. No scoring changes.
+     - Employment Context: collapsible (default closed each session). FRED source
+       links added inline next to each metric (8 series). Gov share calculation
+       fixed for mixed-sign cases: only computes ratio when both ΔPriv and ΔGov
+       share the same sign; otherwise shows descriptive contrast text. Eliminates
+       confusing -103% style outputs when gov masks private decline (or vice versa).
+     - CNN F&G: 7 sub-indicator breakdown added (Stock Price Momentum, Strength,
+       Breadth, Put/Call, Market Volatility, Safe Haven Demand, Junk Bond Demand).
+       Each shown with score, rating, and mini-meter. Collapsible (default closed).
+       fetchFearGreed updated to extract sub-indicator scores from CNN API.
    v17.9: Layout reorganization + new Employment Context card. No scoring changes.
      - NEW: Employment Context card (between Economy & Inflation and Indicators).
        Tracks PAYEMS/USPRIV/USGOVT/Federal(CES9091000001)/State+Local with 12mo &
@@ -258,18 +267,30 @@ function calcEmployment(){
  const d_fed_12=chg(fed,12),d_fed_3=chg(fed,3);
  const d_sl_12=(d_gov_12!=null&&d_fed_12!=null)?(d_gov_12-d_fed_12):null;
  const d_sl_3=(d_gov_3!=null&&d_fed_3!=null)?(d_gov_3-d_fed_3):null;
- /* Gov share of net new jobs (12mo): ΔGov / (ΔGov + ΔPriv) */
- let govShare=null;
+ /* Gov share of net job change. v17.10: only meaningful when both ΔPriv and ΔGov
+    share the same sign. Mixed signs produce ratios that can exceed ±100% or flip
+    sign in confusing ways (e.g. ΔPriv -100K, ΔGov +50K → "gov share -50%" which
+    is misleading). When signs differ, expose null and let the renderer show
+    descriptive contrast text instead. */
+ let govShare=null,govShareKind=null;
  if(d_priv_12!=null&&d_gov_12!=null){
-  const net=d_priv_12+d_gov_12;
-  if(Math.abs(net)>=1)govShare=(d_gov_12/net)*100;
+  if(d_priv_12>0&&d_gov_12>0){
+   govShare=(d_gov_12/(d_gov_12+d_priv_12))*100;
+   govShareKind="growth";
+  }else if(d_priv_12<0&&d_gov_12<0){
+   govShare=(d_gov_12/(d_gov_12+d_priv_12))*100;
+   govShareKind="loss";
+  }
+  /* mixed signs: govShare stays null, govShareKind stays null — renderer will
+     show "Gov masks private decline" or "Lean expansion · gov shrinking" */
  }
- /* 6-bucket classification based on 12mo deltas + gov share */
+ /* 6-bucket classification. v17.10: descriptions made sign-aware so they make
+    sense alongside the now-conditional gov share number. */
  let cls=null;
  if(d_priv_12!=null&&d_gov_12!=null){
-  if(d_priv_12<0&&d_gov_12<0)cls={label:"CONTRACTION",color:"#FF1744",bg:"rgba(255,23,68,.10)",desc:"Both sectors shrinking"};
-  else if(d_priv_12<0)cls={label:"RECESSION",color:"#FF1744",bg:"rgba(255,23,68,.10)",desc:"Private shrinking · gov-padded headline"};
-  else if(d_gov_12<0)cls={label:"LEAN EXPANSION",color:"#00E676",bg:"rgba(0,230,118,.10)",desc:"Private growing · gov shrinking (cleanest read)"};
+  if(d_priv_12<0&&d_gov_12<0)cls={label:"CONTRACTION",color:"#FF1744",bg:"rgba(255,23,68,.10)",desc:"Both sectors shrinking — broad-based job losses"};
+  else if(d_priv_12<0)cls={label:"GOV-MASKED DECLINE",color:"#FF1744",bg:"rgba(255,23,68,.10)",desc:"Private shrinking, gov adding — headline disguises private weakness"};
+  else if(d_gov_12<0)cls={label:"LEAN EXPANSION",color:"#00E676",bg:"rgba(0,230,118,.10)",desc:"Private growing while gov shrinks — cleanest read of underlying economy"};
   else if(govShare!=null&&govShare<5)cls={label:"PRIVATE-LED",color:"#00E676",bg:"rgba(0,230,118,.10)",desc:"Healthy private-driven growth"};
   else if(govShare!=null&&govShare<15)cls={label:"NORMAL MIX",color:"#78909C",bg:"rgba(120,144,156,.10)",desc:"Typical post-war composition (median 10%)"};
   else if(govShare!=null&&govShare<30)cls={label:"GOV-LEANING",color:"#FFC107",bg:"rgba(255,193,7,.10)",desc:"Government-tilted growth"};
@@ -290,7 +311,7 @@ function calcEmployment(){
   d_gov_12,d_gov_3_ann:ann(d_gov_3),
   d_fed_12,d_fed_3_ann:ann(d_fed_3),
   d_sl_12,d_sl_3_ann:ann(d_sl_3),
-  govShare,classification:cls,trendTag,
+  govShare,govShareKind,classification:cls,trendTag,
   u3:latest(u3),u3_yoy:yoy(u3),
   u6:latest(u6),u6_yoy:yoy(u6),
   lfpr:latest(lfpr),lfpr_yoy:yoy(lfpr),
@@ -341,7 +362,9 @@ function renderAAIICard(){
   </div>
  </div>`;}
 
-/* Employment Context card — display-only PAYEMS decomposition + classification + unemployment depth. */
+/* Employment Context card — display-only PAYEMS decomposition + classification + unemployment depth.
+   v17.10: collapsible (default closed each session); FRED source links inline next to each
+   metric; gov share only displayed when sign-meaningful (both growing or both shrinking). */
 function renderEmploymentContext(){
  const e=calcEmployment();
  if(!e)return"";
@@ -356,14 +379,38 @@ function renderEmploymentContext(){
  const uArrow=d=>d==null?"":d>0.05?"▲":d<-0.05?"▼":"▬";
  const payColor=v=>v==null?"var(--t4)":v>0?"var(--cl)":"var(--st)";
  const govColor=v=>v==null?"var(--t4)":v>0?"var(--ca)":"#66BB6A";
- return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+ /* Small FRED link helper — series ID badge */
+ const fredLink=sid=>`<a href="https://fred.stlouisfed.org/series/${sid}" target="_blank" class="m" style="font-size:7px;color:var(--t5);text-decoration:none;margin-left:6px" onclick="event.stopPropagation()">${sid} →</a>`;
+ /* Gov share label — sign-aware: only show numeric ratio when both ΔPriv and ΔGov agree */
+ let shareLine="";
+ if(e.govShareKind==="growth"&&e.govShare!=null){
+  shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--t4)'};opacity:.85">Gov share of new jobs: ${e.govShare.toFixed(1)}%</span>`;
+ }else if(e.govShareKind==="loss"&&e.govShare!=null){
+  shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--t4)'};opacity:.85">Gov share of losses: ${e.govShare.toFixed(1)}%</span>`;
+ }else if(e.d_priv_12!=null&&e.d_gov_12!=null){
+  /* Mixed signs — describe the contrast in absolute terms */
+  if(e.d_priv_12<0&&e.d_gov_12>0){
+   shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--wn)'};opacity:.85">Gov ${fmtK(e.d_gov_12)} offset against private ${fmtK(e.d_priv_12)}</span>`;
+  }else if(e.d_priv_12>0&&e.d_gov_12<0){
+   shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--cl)'};opacity:.85">Gov ${fmtK(e.d_gov_12)} during private ${fmtK(e.d_priv_12)}</span>`;
+  }
+ }
+ const ex=st.empEx;
+ const headerHTML=`<div onclick="toggleEmp()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;${ex?'margin-bottom:10px':''}">
    <span class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em">📊 EMPLOYMENT CONTEXT</span>
-   <span class="m" style="font-size:8px;color:var(--t4)">${dateStr} · Display only</span>
-  </div>
+   <div style="display:flex;align-items:center;gap:8px"><span class="m" style="font-size:8px;color:var(--t4)">${dateStr} · Display only</span><span class="m" style="font-size:9px;color:var(--t4)">${ex?"▲":"▼"}</span></div>
+  </div>`;
+ /* When collapsed, show one-line summary in the header row */
+ if(!ex){
+  const summary=cls?`<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)"><div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:14px;font-weight:700;color:${payColor(e.d_pay_12)}">${fmtK(e.d_pay_12)}</span><span class="m" style="font-size:8px;color:var(--t4)">12mo</span></div><div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:10px;font-weight:700;color:${cls.color}">${cls.label}</span></div></div>`:"";
+  return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">${headerHTML}${summary}</div>`;
+ }
+ /* Full expanded view */
+ return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">
+  ${headerHTML}
   <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
    <div>
-    <div class="m" style="font-size:9px;color:var(--t4)">12MO TOTAL JOBS</div>
+    <div class="m" style="font-size:9px;color:var(--t4)">12MO TOTAL JOBS${fredLink("PAYEMS")}</div>
     <div style="display:flex;align-items:baseline;gap:8px;margin-top:2px">
      <span class="m" style="font-size:24px;font-weight:800;color:${payColor(e.d_pay_12)}">${fmtK(e.d_pay_12)}</span>
      ${tt?`<span class="m" style="font-size:9px;font-weight:700;color:${tt.color}">${tt.label}</span>`:""}
@@ -374,29 +421,29 @@ function renderEmploymentContext(){
     <div class="m" style="font-size:14px;font-weight:700;color:${payColor(e.d_pay_3_ann)};margin-top:2px">${fmtK(e.d_pay_3_ann)}</div>
    </div>
   </div>
-  ${cls?`<div style="margin:10px 0;padding:8px 10px;background:${cls.bg};border:1px solid ${cls.color}30;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center"><span class="m" style="font-size:10px;font-weight:800;color:${cls.color}">${cls.label}</span><span class="m" style="font-size:9px;color:${cls.color};opacity:.85">Gov share: ${e.govShare!=null?e.govShare.toFixed(1)+"%":"—"}</span></div><div class="m" style="font-size:9px;color:var(--t3);margin-top:2px">${cls.desc}</div></div>`:""}
+  ${cls?`<div style="margin:10px 0;padding:8px 10px;background:${cls.bg};border:1px solid ${cls.color}30;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><span class="m" style="font-size:10px;font-weight:800;color:${cls.color}">${cls.label}</span>${shareLine}</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:2px">${cls.desc}</div></div>`:""}
   <div style="margin-top:10px;padding:10px;background:rgba(0,0,0,.2);border-radius:6px">
    <div class="m" style="font-size:8px;color:var(--t4);margin-bottom:6px">DECOMPOSITION · 12MO TOTAL · 3MO ANNUALIZED</div>
    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
     <div>
-     <div class="m" style="font-size:9px;color:var(--t4)">PRIVATE</div>
+     <div class="m" style="font-size:9px;color:var(--t4)">PRIVATE${fredLink("USPRIV")}</div>
      <div class="m" style="font-size:15px;font-weight:700;color:${payColor(e.d_priv_12)}">${fmtK(e.d_priv_12)}</div>
      <div class="m" style="font-size:9px;color:var(--t5)">3mo ann: ${fmtK(e.d_priv_3_ann)}</div>
     </div>
     <div>
-     <div class="m" style="font-size:9px;color:var(--t4)">GOVERNMENT</div>
+     <div class="m" style="font-size:9px;color:var(--t4)">GOVERNMENT${fredLink("USGOVT")}</div>
      <div class="m" style="font-size:15px;font-weight:700;color:${govColor(e.d_gov_12)}">${fmtK(e.d_gov_12)}</div>
      <div class="m" style="font-size:9px;color:var(--t5)">3mo ann: ${fmtK(e.d_gov_3_ann)}</div>
     </div>
    </div>
    <div style="padding-top:8px;border-top:1px solid var(--bd);display:grid;grid-template-columns:1fr 1fr;gap:10px">
     <div>
-     <div class="m" style="font-size:8px;color:var(--t4)">Federal</div>
+     <div class="m" style="font-size:8px;color:var(--t4)">Federal${fredLink("CES9091000001")}</div>
      <div class="m" style="font-size:12px;font-weight:700;color:${govColor(e.d_fed_12)}">${fmtK(e.d_fed_12)}</div>
      <div class="m" style="font-size:8px;color:var(--t5)">3mo ann: ${fmtK(e.d_fed_3_ann)}</div>
     </div>
     <div>
-     <div class="m" style="font-size:8px;color:var(--t4)">State + Local</div>
+     <div class="m" style="font-size:8px;color:var(--t4)">State + Local <span style="color:var(--t5);font-size:7px">(USGOVT − Federal)</span></div>
      <div class="m" style="font-size:12px;font-weight:700;color:${govColor(e.d_sl_12)}">${fmtK(e.d_sl_12)}</div>
      <div class="m" style="font-size:8px;color:var(--t5)">3mo ann: ${fmtK(e.d_sl_3_ann)}</div>
     </div>
@@ -406,24 +453,24 @@ function renderEmploymentContext(){
    <div class="m" style="font-size:8px;color:var(--t4);margin-bottom:8px">UNEMPLOYMENT METRICS · YoY DELTA</div>
    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
     <div>
-     <div class="m" style="font-size:8px;color:var(--t4)">U-3 HEADLINE</div>
+     <div class="m" style="font-size:8px;color:var(--t4)">U-3 HEADLINE${fredLink("UNRATE")}</div>
      <div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:14px;font-weight:700;color:var(--t2)">${fmtPct(e.u3)}</span><span class="m" style="font-size:9px;color:${uColor(e.u3_yoy)}">${uArrow(e.u3_yoy)} ${fmtPP(e.u3_yoy)}</span></div>
     </div>
     <div>
-     <div class="m" style="font-size:8px;color:var(--t4)">U-6 UNDEREMPLOYED</div>
+     <div class="m" style="font-size:8px;color:var(--t4)">U-6 UNDEREMPLOYED${fredLink("U6RATE")}</div>
      <div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:14px;font-weight:700;color:var(--t2)">${fmtPct(e.u6)}</span><span class="m" style="font-size:9px;color:${uColor(e.u6_yoy)}">${uArrow(e.u6_yoy)} ${fmtPP(e.u6_yoy)}</span></div>
     </div>
     <div>
-     <div class="m" style="font-size:8px;color:var(--t4)">LFPR</div>
+     <div class="m" style="font-size:8px;color:var(--t4)">LFPR${fredLink("CIVPART")}</div>
      <div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:14px;font-weight:700;color:var(--t2)">${fmtPct(e.lfpr)}</span><span class="m" style="font-size:9px;color:${lfColor(e.lfpr_yoy)}">${uArrow(e.lfpr_yoy)} ${fmtPP(e.lfpr_yoy)}</span></div>
     </div>
     <div>
-     <div class="m" style="font-size:8px;color:var(--t4)">EMP/POP RATIO</div>
+     <div class="m" style="font-size:8px;color:var(--t4)">EMP/POP RATIO${fredLink("EMRATIO")}</div>
      <div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:14px;font-weight:700;color:var(--t2)">${fmtPct(e.emr)}</span><span class="m" style="font-size:9px;color:${lfColor(e.emr_yoy)}">${uArrow(e.emr_yoy)} ${fmtPP(e.emr_yoy)}</span></div>
     </div>
    </div>
   </div>
-  <div class="m" style="font-size:8px;color:var(--t5);line-height:1.6;margin-top:10px">Gov share = ΔGovt / (ΔGovt + ΔPriv). Median 1948-2025: 10%. Above 30% = headline propped by government. Negative = lean expansion (gov shrinking, private growing). U-3 = headline unemployment; U-6 adds underemployed + discouraged. LFPR = % of working-age in labor force. EM ratio = % of working-age employed. <a href="https://fred.stlouisfed.org/series/PAYEMS" target="_blank" style="color:var(--t4)">PAYEMS →</a></div>
+  <div class="m" style="font-size:8px;color:var(--t5);line-height:1.6;margin-top:10px">Gov share of new jobs = ΔGovt / (ΔGovt + ΔPriv) when both growing. Median 1948-2025: 10%. Above 30% = headline propped by government. When private and gov move in opposite directions, the ratio is omitted and the contrast is shown in absolute terms. U-3 = headline unemployment; U-6 adds underemployed + discouraged. LFPR = % of working-age in labor force. EM ratio = % of working-age employed.</div>
  </div>`;}
 
 /* Policy Uncertainty card — extracted from F&G/AAII/EPU panel in v17.9 so it
@@ -552,7 +599,7 @@ const TIERS={leading:{label:"LEADING",color:"#42A5F5",desc:"75% of recession sco
 const ST={clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:"CLEAR"},watch:{c:"#78909C",bg:"rgba(120,144,156,.06)",b:"rgba(120,144,156,.18)",l:"WATCH"},caution:{c:"#FFC107",bg:"rgba(255,193,7,.07)",b:"rgba(255,193,7,.22)",l:"CAUTION"},warning:{c:"#FF9100",bg:"rgba(255,145,0,.07)",b:"rgba(255,145,0,.22)",l:"WARNING"},stress:{c:"#FF1744",bg:"rgba(255,23,68,.07)",b:"rgba(255,23,68,.22)",l:"STRESS"},unknown:{c:"#555",bg:"rgba(85,85,85,.05)",b:"rgba(85,85,85,.15)",l:"—"}};
 const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx:true,yc:false,cr:false,ic:false,sa:false,mf:false,vx:false,cape:false,co:false});
 
-let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},msdEx:false,ld:false,err:null,upd:null,px:0,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
+let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},msdEx:false,empEx:false,fgEx:false,ld:false,err:null,upd:null,px:0,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
  bt:{open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false}};
 
 async function ff(sid,key,lim=24,freq=""){let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](base),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{continue}if(j.observations){st.px=i;return j.observations.filter(o=>o.value!==".").reverse()}if(j.contents){try{const p=JSON.parse(j.contents);if(p.observations){st.px=i;return p.observations.filter(o=>o.value!==".").reverse()}}catch{}}}catch{continue}}throw new Error(sid)}
@@ -596,6 +643,20 @@ async function fetchFearGreed(){
       ~10 trading days for EF streak, ~5 for EG streak. */
    const hist=(j.fear_and_greed_historical&&j.fear_and_greed_historical.data)||[];
    const series=hist.filter(d=>typeof d.y==="number").map(d=>({t:d.x,v:d.y})).sort((a,b)=>a.t-b.t);
+   /* v17.10: Extract the 7 sub-indicators that compose the headline F&G score.
+      CNN API returns each as {score, rating, timestamp}. The "_50" / "_125"
+      suffixed fields are the comparative indicators (e.g. VIX vs 50-day MA);
+      the raw market_momentum_sp500 / market_volatility_vix are NOT indicators. */
+   const pick=(obj,fields)=>{if(!obj||typeof obj!=="object")return null;const r={};for(const f of fields){if(obj[f]!==undefined)r[f]=obj[f]}return Object.keys(r).length?r:null};
+   const components={
+    momentum:pick(j.market_momentum_sp125,["score","rating","timestamp"]),
+    strength:pick(j.stock_price_strength,["score","rating","timestamp"]),
+    breadth:pick(j.stock_price_breadth,["score","rating","timestamp"]),
+    putCall:pick(j.put_call_options,["score","rating","timestamp"]),
+    volatility:pick(j.market_volatility_vix_50,["score","rating","timestamp"]),
+    safeHaven:pick(j.safe_haven_demand,["score","rating","timestamp"]),
+    junkBond:pick(j.junk_bond_demand,["score","rating","timestamp"])
+   };
    st.fg={
     score:fg.score,
     rating:fg.rating,
@@ -605,9 +666,11 @@ async function fetchFearGreed(){
     prevMonth:fg.previous_1_month,
     prevYear:fg.previous_1_year,
     series,
+    components,
     fetched:new Date().toISOString()
    };
-   console.log("CNN F&G: "+fg.score.toFixed(1)+" ("+fg.rating+") — "+series.length+" days of history");
+   const cn=Object.values(components).filter(Boolean).length;
+   console.log("CNN F&G: "+fg.score.toFixed(1)+" ("+fg.rating+") — "+series.length+" days of history, "+cn+"/7 components");
    return;
   }catch(e){continue}
  }
@@ -1098,7 +1161,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.9 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX (+9.9pp). ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.10 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -1195,6 +1258,49 @@ function render(){const a=document.getElementById("app");
      <div class="m" style="font-size:8px;color:${clr(dYear)}">${arrow(dYear)} ${fmtDelta(dYear)}</div>
     </div>
    </div>
+   ${(()=>{
+    /* v17.10: 7-indicator breakdown of the headline F&G score. CNN's API returns
+       each component's score (0-100) and rating (extreme fear → extreme greed).
+       Collapsible — default closed each session. */
+    const c=fg.components;
+    if(!c)return"";
+    const items=[
+     {k:"momentum",n:"Stock Price Momentum",desc:"S&P 500 vs 125-day MA"},
+     {k:"strength",n:"Stock Price Strength",desc:"52-week highs vs lows on NYSE"},
+     {k:"breadth",n:"Stock Price Breadth",desc:"McClellan Volume Summation"},
+     {k:"putCall",n:"Put / Call Options",desc:"5-day put/call volume ratio"},
+     {k:"volatility",n:"Market Volatility",desc:"VIX vs 50-day MA"},
+     {k:"safeHaven",n:"Safe Haven Demand",desc:"Stocks vs 20-day Treasury returns"},
+     {k:"junkBond",n:"Junk Bond Demand",desc:"HY vs IG corporate spread"}
+    ].filter(it=>c[it.k]);
+    if(!items.length)return"";
+    const zoneOf=s=>s<25?{c:"var(--cl)",bg:"rgba(0,230,118,.10)",label:"EXTREME FEAR"}
+                     :s<45?{c:"#66BB6A",bg:"rgba(102,187,106,.08)",label:"FEAR"}
+                     :s<=55?{c:"var(--t3)",bg:"rgba(120,144,156,.08)",label:"NEUTRAL"}
+                     :s<=75?{c:"var(--ca)",bg:"rgba(255,193,7,.08)",label:"GREED"}
+                     :{c:"var(--st)",bg:"rgba(255,23,68,.10)",label:"EXTREME GREED"};
+    const rows=items.map(it=>{
+     const score=c[it.k].score;
+     const rating=c[it.k].rating||"";
+     const z=zoneOf(score);
+     const pct=Math.max(0,Math.min(100,score));
+     return `<div style="padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+       <div><span class="m" style="font-size:11px;font-weight:700;color:var(--t2)">${it.n}</span></div>
+       <div style="text-align:right"><span class="m" style="font-size:14px;font-weight:800;color:${z.c}">${score.toFixed(0)}</span><span class="m" style="font-size:8px;color:${z.c};margin-left:6px">${z.label}</span></div>
+      </div>
+      <div style="position:relative;height:5px;border-radius:3px;background:linear-gradient(to right,#00E676 0%,#66BB6A 25%,#78909C 45%,#78909C 55%,#FFC107 75%,#FF1744 100%);margin-bottom:4px">
+       <div style="position:absolute;left:${pct}%;top:-3px;width:2px;height:11px;background:var(--tx);border-radius:1px;transform:translateX(-1px);box-shadow:0 0 3px rgba(0,0,0,.5)"></div>
+      </div>
+      <div class="m" style="font-size:8px;color:var(--t5);line-height:1.4">${it.desc}</div>
+     </div>`;
+    }).join("");
+    return `<div onclick="toggleFG()" style="margin-bottom:8px;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+     <span class="m" style="font-size:9px;color:var(--t4);letter-spacing:.05em">COMPONENTS · ${items.length} INDICATORS</span>
+     <span class="m" style="font-size:9px;color:var(--t4)">${st.fgEx?"▲ Tap to collapse":"▼ Tap to expand"}</span>
+    </div>
+    ${st.fgEx?`<div style="margin-bottom:10px">${rows}</div>`:""}`;
+   })()}
    <div style="padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
     <div style="font-size:10px;color:#888;line-height:1.6">${zone.note} CNN's composite of 7 market signals (VIX, momentum, junk bond demand, put/call, stock strength, breadth, safe-haven demand). Best used as contrarian: extreme fear often marks bottoms, extreme greed often marks tops.</div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
@@ -1298,6 +1404,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (Hybrid F symmetric — tiered absolute 13/12/11 + above-MA-gated z-gradient) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
+ <strong style="color:var(--t4)">v17.10</strong>: UX refinements. Employment Context now collapsible (default closed each session) with FRED source links inline next to every metric (PAYEMS, USPRIV, USGOVT, CES9091000001, UNRATE, U6RATE, CIVPART, EMRATIO). Gov share calculation fixed: only computes ratio when ΔPriv and ΔGov share the same sign — eliminates confusing -100%+ outputs when sectors move in opposite directions. Mixed-sign cases now show contrast in absolute terms ("Gov +50K offset against private -100K") with clearer labels (GOV-MASKED DECLINE, LEAN EXPANSION). CNN F&amp;G card: 7 sub-indicator breakdown added (Stock Price Momentum, Strength, Breadth, Put/Call, Market Volatility, Safe Haven Demand, Junk Bond Demand) — each shown with score, rating, and mini-meter. Collapsible (default closed). No scoring changes.<br>
  <strong style="color:var(--t4)">v17.9</strong>: Layout reorganization + new Employment Context card. NEW: Employment Context (between Economy &amp; Inflation and Indicators) — PAYEMS/Private/Government with federal vs state+local breakdown, 12mo &amp; 3mo annualized windows, 6-bucket classification (Private-led/Normal/Gov-leaning/Gov-heavy/Lean/Contraction), gov share of net new jobs (median 1948-2025: 10%), unemployment depth (U-3, U-6, LFPR, EMRATIO with YoY deltas). Display only — no scoring impact. MOVED: EPU/Policy Uncertainty extracted as its own card. AAII full card moved into Indicators Market Signals tier under Consumer Sentiment. COLLAPSED: Market Signal Detail panel — meter, override, capitulation banners always visible; VIX/CAPE/Sentiment/Regime cards default-collapsed every session, tap to expand.<br>
  <strong style="color:var(--t4)">v17.8</strong>: VIX sell-side hybrid restructured to mirror buy-side architecture. Tiered absolute (VIX&lt;13/12/11 → +1/+2/+3) replaces single VIX&lt;12 trigger. Z-gradient (z&lt;-1.0/-1.25 → +1/+2) now requires above 10mo MA — symmetric to existing buy-side gate. Validated on full 16yr Strategy Matrix sim: +312.3% vs v17.7 +302.4% (+9.9pp), same -30.1% max DD, 41% fewer noisy SELL days.<br>
  <strong style="color:var(--t4)">v17.7</strong>: CNN Fear &amp; Greed integrated as active market-signal contributor. F&amp;G Capitulation (−0.2 buy) + F&amp;G Greed Warning (+0.2 sell). Validated on 10yr daily backtest (n=2445). Stacks additively with AAII Cap; both firing = +33.96% fwd 6mo. Recession-gating tested &amp; rejected.<br>
@@ -1310,9 +1417,11 @@ function render(){const a=document.getElementById("app");
 function toggleAR(){if(st.autoRef){clearInterval(st.autoRef);st.autoRef=null}else{st.autoRef=setInterval(()=>loadAll(),4*60*60*1000)}render()}
 function toggleBT(){st.bt.open=!st.bt.open;render()}
 function toggleMSD(){st.msdEx=!st.msdEx;render()}
+function toggleEmp(){st.empEx=!st.empEx;render()}
+function toggleFG(){st.fgEx=!st.fgEx;render()}
 function togOv(k){st.bt.ov[k]=!st.bt.ov[k];render()}
 function setWindow(w){st.bt.window=w;render();setTimeout(bindBTChart,120)}
-function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.msdEx=false;st.momentum=null;st.aaii=null;st.fg=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
+function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.msdEx=false;st.empEx=false;st.fgEx=false;st.momentum=null;st.aaii=null;st.fg=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
