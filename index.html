@@ -60,7 +60,7 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17.12 METHODOLOGY ═══
+/* ═══ v17.13 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
    MARKET SIGNAL: VIX 40% + CAPE 25% + Sentiment 35%
      + AAII/F&G capitulation/greed bonuses (see v17.7-8)
@@ -68,18 +68,21 @@ function clamp(v){return Math.max(0,Math.min(100,v))}
               AAII (full card, in Market Signals tier),
               Employment Context (federal/state+local jobs, collapsible),
               Policy Uncertainty (collapsible, display only)
-   v17.12: Employment Context — added percentage split alongside Priv:Gov ratio.
-     No scoring changes. Addresses the lean-expansion-reads-as-loss problem:
-     "-1.97 : 1" reads as if private is losing 1.97 jobs per gov job, but in
-     lean expansion private is actually GROWING while gov shrinks.
-     - NEW: Percentage split shown below ratio. Formula: priv/|net| and gov/|net|.
-       Using |net| as denominator preserves the sign of each underlying delta, so
-       Priv +204% / Gov -104% (lean expansion) directly reads as "private growing,
-       gov offsetting." Priv -200% / Gov +100% (gov-masked decline) reads as
-       "private shrinking, gov padding."
-     - Ratio negative number now colored red inline (the "-1.97" gets red).
-     - Colors on % split: negative = red (shrinking), >100% = amber (offsetting
-       context, flag that one side is more than the whole), normal 0-100% = neutral.
+   v17.13: Lean-expansion ratio fix. No scoring changes.
+     - Previously (v17.12), lean expansion (Priv+, Gov-) showed as "-1.97 : 1
+       priv:gov" because the formula was always ΔPriv/ΔGov. With priv in the
+       numerator, the negative sign visually attached to private — even though
+       private is the GROWING side. The "-1.97" looked like private losing
+       jobs, which is the opposite of what's happening.
+     - Fix: when sectors move in opposite directions with priv+/gov-, flip the
+       ratio so the negative sector (gov) becomes the numerator and the positive
+       sector (priv) becomes the "1" baseline. Math: -260/511 = -0.51 : 1.
+       Label flips to "gov:priv" to match. Reads cleanly as "gov shed 0.51 jobs
+       per 1 private job added."
+     - All other cases unchanged. Gov-masked decline (Priv-, Gov+) already had
+       priv (the negative side) in the numerator → keeps priv:gov label.
+       Both-positive and both-negative cases unchanged.
+   v17.12: Percentage split added alongside Priv:Gov ratio.
    v17.11: Priv:Gov ratio replaces gov share %; enhanced collapsed view.
    v17.10: UX refinements. Employment Context collapse + FRED links.
    v17.9: Layout reorganization + new Employment Context card. No scoring changes.
@@ -290,12 +293,31 @@ function calcEmployment(){
       contraction context, e.g. (5.0 : 1)
     - Mixed signs: negative ratio indicates mismatch, e.g. -2.08 : 1
     - Near-zero gov (|ΔGov| < 1K): ratio omitted to avoid div-by-zero artifacts */
- let ratio=null,ratioKind=null;
- if(d_priv_12!=null&&d_gov_12!=null&&Math.abs(d_gov_12)>=1){
-  ratio=d_priv_12/d_gov_12;
-  if(d_priv_12>0&&d_gov_12>0)ratioKind="growth";
-  else if(d_priv_12<0&&d_gov_12<0)ratioKind="loss";
-  else ratioKind="mixed";
+ /* v17.13: Priv:Gov ratio with adaptive convention.
+    Rule: when sectors move in opposite directions, the negative side goes in the
+    numerator and the positive side becomes the "1" baseline. This keeps the sign
+    of the ratio attached to the actually-shrinking sector.
+      - Both positive: priv/gov, label "priv:gov" (e.g. 10:1 priv:gov)
+      - Both negative: priv/gov, label "priv:gov", shown in parens
+      - Priv+/Gov-: gov/priv, label "gov:priv" (e.g. -0.51:1 gov:priv — gov is the
+        shrinking side, sign attached to gov; reads "gov shed 0.51 per 1 priv add")
+      - Priv-/Gov+: priv/gov, label "priv:gov" (priv is already in numerator; sign
+        attached to priv which is the shrinking side; reads "priv lost 2 per 1 gov add") */
+ let ratio=null,ratioKind=null,ratioLabel="priv:gov";
+ if(d_priv_12!=null&&d_gov_12!=null){
+  let num,denom;
+  if(d_priv_12>0&&d_gov_12<0){
+   /* Lean expansion: flip — negative gov in numerator, positive priv as baseline */
+   num=d_gov_12;denom=d_priv_12;ratioLabel="gov:priv";
+  }else{
+   num=d_priv_12;denom=d_gov_12;ratioLabel="priv:gov";
+  }
+  if(Math.abs(denom)>=1){
+   ratio=num/denom;
+   if(d_priv_12>0&&d_gov_12>0)ratioKind="growth";
+   else if(d_priv_12<0&&d_gov_12<0)ratioKind="loss";
+   else ratioKind="mixed";
+  }
  }
  /* v17.12: Percentage split. Each sector's share of net change, using |net|
     as denominator so the sign of each contribution is preserved. This way:
@@ -339,7 +361,7 @@ function calcEmployment(){
   d_gov_12,d_gov_3_ann:ann(d_gov_3),
   d_fed_12,d_fed_3_ann:ann(d_fed_3),
   d_sl_12,d_sl_3_ann:ann(d_sl_3),
-  govShare,govShareKind,ratio,ratioKind,privPct,govPct,netChg,classification:cls,trendTag,
+  govShare,govShareKind,ratio,ratioKind,ratioLabel,privPct,govPct,netChg,classification:cls,trendTag,
   u3:latest(u3),u3_yoy:yoy(u3),
   u6:latest(u6),u6_yoy:yoy(u6),
   lfpr:latest(lfpr),lfpr_yoy:yoy(lfpr),
@@ -450,7 +472,7 @@ function renderEmploymentContext(){
  /* Ratio line for classification box (right side) */
  let ratioLine="";
  if(ratioStr){
-  ratioLine=`<span class="m" style="font-size:10px;font-weight:700;color:${ratioColor}">${ratioStr}</span><span class="m" style="font-size:8px;color:var(--t4);margin-left:4px">priv:gov</span>`;
+  ratioLine=`<span class="m" style="font-size:10px;font-weight:700;color:${ratioColor}">${ratioStr}</span><span class="m" style="font-size:8px;color:var(--t4);margin-left:4px">${e.ratioLabel||"priv:gov"}</span>`;
  }else if(e.d_priv_12!=null&&e.d_gov_12!=null&&Math.abs(e.d_gov_12)<1){
   ratioLine=`<span class="m" style="font-size:9px;color:var(--t4)">Gov ~unchanged</span>`;
  }
@@ -470,7 +492,7 @@ function renderEmploymentContext(){
      </div>
      <div style="text-align:right">
       <div class="m" style="font-size:10px;font-weight:800;color:${cls.color}">${cls.label}</div>
-      ${ratioStr?`<div class="m" style="font-size:9px;font-weight:700;margin-top:1px"><span style="color:${ratioColor}">${ratioStr}</span> <span style="color:var(--t4);font-weight:400">priv:gov</span></div>`:""}
+      ${ratioStr?`<div class="m" style="font-size:9px;font-weight:700;margin-top:1px"><span style="color:${ratioColor}">${ratioStr}</span> <span style="color:var(--t4);font-weight:400">${e.ratioLabel||"priv:gov"}</span></div>`:""}
       ${splitLine?`<div class="m" style="font-size:8px;margin-top:1px">${splitLine}</div>`:""}
      </div>
     </div>
@@ -547,7 +569,7 @@ function renderEmploymentContext(){
     </div>
    </div>
   </div>
-  <div class="m" style="font-size:8px;color:var(--t5);line-height:1.6;margin-top:10px">Priv:Gov ratio = ΔPrivate / ΔGov, expressed as private jobs per government job. Negative ratio (red) = sectors moving in opposite directions. Parens like (5.0 : 1) = both shrinking. Percentage split = each sector's share of net change (signs preserved). >100% (amber) or negative (red) flags offsetting context: in lean expansion the private side exceeds 100% because government is offsetting growth. Median 1948-2025 (growth periods): ~10:1. U-3 = headline unemployment; U-6 adds underemployed + discouraged. LFPR = % of working-age in labor force. EM ratio = % of working-age employed.</div>
+  <div class="m" style="font-size:8px;color:var(--t5);line-height:1.6;margin-top:10px">Priv:Gov ratio: when sectors agree in direction, ΔPriv/ΔGov reads "X private jobs per 1 gov job" (priv:gov label). When sectors diverge, the negative side moves to the numerator and the positive side becomes the "1" baseline, so the sign attaches to the actually-shrinking sector. Lean expansion (priv+/gov-) → "gov:priv" label: -0.51:1 means gov shed 0.51 jobs per 1 private add. Gov-masked decline (priv-/gov+) → priv:gov label: -2:1 means priv lost 2 jobs per 1 gov add. Parens like (5.0 : 1) flag both-shrinking. Percentage split = each sector's share of net change with signs preserved; >100% (amber) and negative (red) flag offsetting context. U-3 = headline unemployment; U-6 adds underemployed + discouraged. LFPR = % of working-age in labor force. EM ratio = % of working-age employed.</div>
  </div>`;}
 
 /* Policy Uncertainty card — extracted from F&G/AAII/EPU panel in v17.9.
@@ -1257,7 +1279,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.12 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.13 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -1500,6 +1522,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (Hybrid F symmetric — tiered absolute 13/12/11 + above-MA-gated z-gradient) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
+ <strong style="color:var(--t4)">v17.13</strong>: Lean-expansion ratio fix. Previously "-1.97 : 1 priv:gov" implied private was losing 1.97 jobs per gov job — but in lean expansion private is the GROWING side. The negative sign was visually attached to the wrong sector because priv was always the numerator. Fix: when priv is positive and gov is negative, flip the formula so the negative sector (gov) is in the numerator and the positive sector (priv) is the "1" baseline. Math: -260/511 = -0.51 : 1, label "gov:priv". Reads cleanly as "gov shed 0.51 jobs per 1 private job added." All other cases unchanged (gov-masked decline already had priv-the-negative-side in numerator, both-positive and both-negative cases retain priv:gov order). No scoring changes.<br>
  <strong style="color:var(--t4)">v17.12</strong>: Employment Context — percentage split added alongside Priv:Gov ratio. Addresses lean-expansion-reads-as-loss problem: "-1.97 : 1" looks like private is losing 1.97 jobs per gov job, but in lean expansion private is actually growing. New split uses |net| as denominator so signs of each delta are preserved: lean expansion shows Priv +204% (amber, exceeds whole) / Gov -104% (red, offsetting); gov-masked decline shows Priv -200% (red, shrinking) / Gov +100% (amber, padding); normal cases show clean 0-100% splits in neutral colors; contraction shows both percentages negative. Ratio's negative number portion now colored red inline. No scoring changes.<br>
  <strong style="color:var(--t4)">v17.11</strong>: Employment Context UX. Gov share % replaced with Priv:Gov ratio ("10.0 : 1") — reads more intuitively as "private jobs per government job". Sign-aware: both positive → plain, both negative → parens like "(5.0 : 1)" to flag contraction, mixed signs → negative ratio like "-2.08 : 1" indicating sectors moving opposite directions. Negative job deltas now consistently displayed in red. Collapsed view now shows priv/gov 12mo deltas, Priv:Gov ratio, and U-3 with YoY delta. Policy Uncertainty card now collapsible (default closed each session). No scoring changes.<br>
  <strong style="color:var(--t4)">v17.10</strong>: UX refinements. Employment Context now collapsible (default closed each session) with FRED source links inline next to every metric (PAYEMS, USPRIV, USGOVT, CES9091000001, UNRATE, U6RATE, CIVPART, EMRATIO). Gov share calculation fixed: only computes ratio when ΔPriv and ΔGov share the same sign — eliminates confusing -100%+ outputs when sectors move in opposite directions. Mixed-sign cases now show contrast in absolute terms ("Gov +50K offset against private -100K") with clearer labels (GOV-MASKED DECLINE, LEAN EXPANSION). CNN F&amp;G card: 7 sub-indicator breakdown added (Stock Price Momentum, Strength, Breadth, Put/Call, Market Volatility, Safe Haven Demand, Junk Bond Demand) — each shown with score, rating, and mini-meter. Collapsible (default closed). No scoring changes.<br>
