@@ -60,24 +60,28 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17.10 METHODOLOGY ═══
+/* ═══ v17.12 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
    MARKET SIGNAL: VIX 40% + CAPE 25% + Sentiment 35%
      + AAII/F&G capitulation/greed bonuses (see v17.7-8)
    REFERENCE: F&G (full card with 7-indicator breakdown, collapsible),
               AAII (full card, in Market Signals tier),
               Employment Context (federal/state+local jobs, collapsible),
-              EPU (Policy Uncertainty card, display only)
-   v17.10: UX refinements. No scoring changes.
-     - Employment Context: collapsible (default closed each session). FRED source
-       links added inline next to each metric (8 series). Gov share calculation
-       fixed for mixed-sign cases: only computes ratio when both ΔPriv and ΔGov
-       share the same sign; otherwise shows descriptive contrast text. Eliminates
-       confusing -103% style outputs when gov masks private decline (or vice versa).
-     - CNN F&G: 7 sub-indicator breakdown added (Stock Price Momentum, Strength,
-       Breadth, Put/Call, Market Volatility, Safe Haven Demand, Junk Bond Demand).
-       Each shown with score, rating, and mini-meter. Collapsible (default closed).
-       fetchFearGreed updated to extract sub-indicator scores from CNN API.
+              Policy Uncertainty (collapsible, display only)
+   v17.12: Employment Context — added percentage split alongside Priv:Gov ratio.
+     No scoring changes. Addresses the lean-expansion-reads-as-loss problem:
+     "-1.97 : 1" reads as if private is losing 1.97 jobs per gov job, but in
+     lean expansion private is actually GROWING while gov shrinks.
+     - NEW: Percentage split shown below ratio. Formula: priv/|net| and gov/|net|.
+       Using |net| as denominator preserves the sign of each underlying delta, so
+       Priv +204% / Gov -104% (lean expansion) directly reads as "private growing,
+       gov offsetting." Priv -200% / Gov +100% (gov-masked decline) reads as
+       "private shrinking, gov padding."
+     - Ratio negative number now colored red inline (the "-1.97" gets red).
+     - Colors on % split: negative = red (shrinking), >100% = amber (offsetting
+       context, flag that one side is more than the whole), normal 0-100% = neutral.
+   v17.11: Priv:Gov ratio replaces gov share %; enhanced collapsed view.
+   v17.10: UX refinements. Employment Context collapse + FRED links.
    v17.9: Layout reorganization + new Employment Context card. No scoring changes.
      - NEW: Employment Context card (between Economy & Inflation and Indicators).
        Tracks PAYEMS/USPRIV/USGOVT/Federal(CES9091000001)/State+Local with 12mo &
@@ -267,11 +271,8 @@ function calcEmployment(){
  const d_fed_12=chg(fed,12),d_fed_3=chg(fed,3);
  const d_sl_12=(d_gov_12!=null&&d_fed_12!=null)?(d_gov_12-d_fed_12):null;
  const d_sl_3=(d_gov_3!=null&&d_fed_3!=null)?(d_gov_3-d_fed_3):null;
- /* Gov share of net job change. v17.10: only meaningful when both ΔPriv and ΔGov
-    share the same sign. Mixed signs produce ratios that can exceed ±100% or flip
-    sign in confusing ways (e.g. ΔPriv -100K, ΔGov +50K → "gov share -50%" which
-    is misleading). When signs differ, expose null and let the renderer show
-    descriptive contrast text instead. */
+ /* Gov share of net job change. Only meaningful when both ΔPriv and ΔGov share
+    the same sign. Used internally for classification thresholds. */
  let govShare=null,govShareKind=null;
  if(d_priv_12!=null&&d_gov_12!=null){
   if(d_priv_12>0&&d_gov_12>0){
@@ -281,8 +282,35 @@ function calcEmployment(){
    govShare=(d_gov_12/(d_gov_12+d_priv_12))*100;
    govShareKind="loss";
   }
-  /* mixed signs: govShare stays null, govShareKind stays null — renderer will
-     show "Gov masks private decline" or "Lean expansion · gov shrinking" */
+ }
+ /* v17.11: Priv:Gov ratio for display (replaces gov share %). Reads more
+    intuitively as "N private jobs per government job".
+    - Both positive: positive ratio (plain) e.g. 10.0 : 1
+    - Both negative: positive ratio (math: neg/neg=pos), shown in parens to flag
+      contraction context, e.g. (5.0 : 1)
+    - Mixed signs: negative ratio indicates mismatch, e.g. -2.08 : 1
+    - Near-zero gov (|ΔGov| < 1K): ratio omitted to avoid div-by-zero artifacts */
+ let ratio=null,ratioKind=null;
+ if(d_priv_12!=null&&d_gov_12!=null&&Math.abs(d_gov_12)>=1){
+  ratio=d_priv_12/d_gov_12;
+  if(d_priv_12>0&&d_gov_12>0)ratioKind="growth";
+  else if(d_priv_12<0&&d_gov_12<0)ratioKind="loss";
+  else ratioKind="mixed";
+ }
+ /* v17.12: Percentage split. Each sector's share of net change, using |net|
+    as denominator so the sign of each contribution is preserved. This way:
+    - Both positive (growth): both percentages positive, sum to +100%
+    - Both negative (contraction): both percentages negative, sum to -100%
+    - Mixed (lean expansion: priv+/gov-): priv > +100%, gov negative, sum = +100%
+    - Mixed (gov-masked decline: priv-/gov+): priv negative, gov positive, sum = -100%
+    Sign of each share matches sign of the underlying delta — readable at a glance. */
+ let privPct=null,govPct=null,netChg=null;
+ if(d_priv_12!=null&&d_gov_12!=null){
+  netChg=d_priv_12+d_gov_12;
+  if(Math.abs(netChg)>=1){
+   privPct=(d_priv_12/Math.abs(netChg))*100;
+   govPct=(d_gov_12/Math.abs(netChg))*100;
+  }
  }
  /* 6-bucket classification. v17.10: descriptions made sign-aware so they make
     sense alongside the now-conditional gov share number. */
@@ -311,7 +339,7 @@ function calcEmployment(){
   d_gov_12,d_gov_3_ann:ann(d_gov_3),
   d_fed_12,d_fed_3_ann:ann(d_fed_3),
   d_sl_12,d_sl_3_ann:ann(d_sl_3),
-  govShare,govShareKind,classification:cls,trendTag,
+  govShare,govShareKind,ratio,ratioKind,privPct,govPct,netChg,classification:cls,trendTag,
   u3:latest(u3),u3_yoy:yoy(u3),
   u6:latest(u6),u6_yoy:yoy(u6),
   lfpr:latest(lfpr),lfpr_yoy:yoy(lfpr),
@@ -363,8 +391,7 @@ function renderAAIICard(){
  </div>`;}
 
 /* Employment Context card — display-only PAYEMS decomposition + classification + unemployment depth.
-   v17.10: collapsible (default closed each session); FRED source links inline next to each
-   metric; gov share only displayed when sign-meaningful (both growing or both shrinking). */
+   v17.11: Priv:Gov ratio replaces gov share %; enhanced collapsed view with key metrics. */
 function renderEmploymentContext(){
  const e=calcEmployment();
  if(!e)return"";
@@ -373,36 +400,86 @@ function renderEmploymentContext(){
  const fmtPct=v=>v==null?"—":v.toFixed(1)+"%";
  const dateStr=e.latestDate?new Date(e.latestDate+"T00:00:00").toLocaleDateString("en-US",{month:"short",year:"numeric"}):"";
  const cls=e.classification,tt=e.trendTag;
- /* Unemployment color logic: rising U-3/U-6 = bad; rising LFPR/EMRATIO = good */
+ /* v17.11: Color logic. Negative deltas always shown red for clear bad/good signal.
+    payColor (private): green positive, red negative.
+    govColor (government): amber positive (could signal headline-padding), red negative. */
+ const payColor=v=>v==null?"var(--t4)":v>0?"var(--cl)":"var(--st)";
+ const govColor=v=>v==null?"var(--t4)":v>0?"var(--ca)":"var(--st)";
+ /* Unemployment color: rising U-3/U-6 = bad; rising LFPR/EMRATIO = good (separate semantics) */
  const uColor=d=>d==null?"var(--t4)":d>0.3?"var(--st)":d>0.1?"var(--wn)":d<-0.3?"var(--cl)":d<-0.1?"#66BB6A":"var(--t3)";
  const lfColor=d=>d==null?"var(--t4)":d>0.3?"var(--cl)":d>0.1?"#66BB6A":d<-0.3?"var(--st)":d<-0.1?"var(--wn)":"var(--t3)";
  const uArrow=d=>d==null?"":d>0.05?"▲":d<-0.05?"▼":"▬";
- const payColor=v=>v==null?"var(--t4)":v>0?"var(--cl)":"var(--st)";
- const govColor=v=>v==null?"var(--t4)":v>0?"var(--ca)":"#66BB6A";
- /* Small FRED link helper — series ID badge */
+ /* FRED link helper */
  const fredLink=sid=>`<a href="https://fred.stlouisfed.org/series/${sid}" target="_blank" class="m" style="font-size:7px;color:var(--t5);text-decoration:none;margin-left:6px" onclick="event.stopPropagation()">${sid} →</a>`;
- /* Gov share label — sign-aware: only show numeric ratio when both ΔPriv and ΔGov agree */
- let shareLine="";
- if(e.govShareKind==="growth"&&e.govShare!=null){
-  shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--t4)'};opacity:.85">Gov share of new jobs: ${e.govShare.toFixed(1)}%</span>`;
- }else if(e.govShareKind==="loss"&&e.govShare!=null){
-  shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--t4)'};opacity:.85">Gov share of losses: ${e.govShare.toFixed(1)}%</span>`;
- }else if(e.d_priv_12!=null&&e.d_gov_12!=null){
-  /* Mixed signs — describe the contrast in absolute terms */
-  if(e.d_priv_12<0&&e.d_gov_12>0){
-   shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--wn)'};opacity:.85">Gov ${fmtK(e.d_gov_12)} offset against private ${fmtK(e.d_priv_12)}</span>`;
-  }else if(e.d_priv_12>0&&e.d_gov_12<0){
-   shareLine=`<span class="m" style="font-size:9px;color:${cls?cls.color:'var(--cl)'};opacity:.85">Gov ${fmtK(e.d_gov_12)} during private ${fmtK(e.d_priv_12)}</span>`;
-  }
+ /* Format Priv:Gov ratio with sign-aware decoration.
+    v17.12: When ratio is negative (mixed-sign case), the negative number portion
+    gets a red color span inline to make the "this side is shrinking" cue visible
+    even though the line reads as a ratio. */
+ const fmtRatio=(r,kind)=>{
+  if(r==null)return null;
+  const abs=Math.abs(r);
+  let s;
+  if(abs>=100)s=r.toFixed(0);
+  else if(abs>=10)s=r.toFixed(1);
+  else if(abs>=1)s=r.toFixed(2);
+  else s=r.toFixed(3);
+  /* Red-color the negative number portion (mixed-sign case) */
+  const numHtml=s.startsWith('-')?`<span style="color:var(--st)">${s}</span>`:s;
+  return kind==="loss"?`(${numHtml} : 1)`:`${numHtml} : 1`;
+ };
+ const ratioStr=fmtRatio(e.ratio,e.ratioKind);
+ /* Ratio color (outer): loss = red overall, growth = classification color, mixed = neutral
+    (the negative number inside already carries its own red coloring) */
+ const ratioColor=e.ratioKind==="loss"?"var(--st)":e.ratioKind==="mixed"?"var(--t2)":(cls?cls.color:"var(--t4)");
+ /* v17.12: Percentage split formatter.
+    Color rule: negative % = red (sector shrinking); > 100% = amber (offsetting context);
+    normal 0-100% = neutral text. Sign of % shows direction of underlying delta. */
+ const fmtSharePct=p=>{
+  if(p==null)return null;
+  let color="var(--t2)";
+  if(p<0)color="var(--st)";
+  else if(p>100)color="var(--wn)";
+  return `<span style="color:${color}">${p.toFixed(0)}%</span>`;
+ };
+ /* Build the split line: "Priv X% · Gov Y% of net ±NK" */
+ let splitLine="";
+ if(e.privPct!=null&&e.govPct!=null){
+  const netSign=e.netChg>=0?"+":"";
+  splitLine=`Priv ${fmtSharePct(e.privPct)} · Gov ${fmtSharePct(e.govPct)} <span style="color:var(--t4)">of net ${netSign}${Math.round(e.netChg).toLocaleString()}K</span>`;
+ }
+ /* Ratio line for classification box (right side) */
+ let ratioLine="";
+ if(ratioStr){
+  ratioLine=`<span class="m" style="font-size:10px;font-weight:700;color:${ratioColor}">${ratioStr}</span><span class="m" style="font-size:8px;color:var(--t4);margin-left:4px">priv:gov</span>`;
+ }else if(e.d_priv_12!=null&&e.d_gov_12!=null&&Math.abs(e.d_gov_12)<1){
+  ratioLine=`<span class="m" style="font-size:9px;color:var(--t4)">Gov ~unchanged</span>`;
  }
  const ex=st.empEx;
  const headerHTML=`<div onclick="toggleEmp()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;${ex?'margin-bottom:10px':''}">
    <span class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em">📊 EMPLOYMENT CONTEXT</span>
    <div style="display:flex;align-items:center;gap:8px"><span class="m" style="font-size:8px;color:var(--t4)">${dateStr} · Display only</span><span class="m" style="font-size:9px;color:var(--t4)">${ex?"▲":"▼"}</span></div>
   </div>`;
- /* When collapsed, show one-line summary in the header row */
+ /* v17.11: Enhanced collapsed view — total + classification + ratio + Priv/Gov split + U-3 */
  if(!ex){
-  const summary=cls?`<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)"><div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:14px;font-weight:700;color:${payColor(e.d_pay_12)}">${fmtK(e.d_pay_12)}</span><span class="m" style="font-size:8px;color:var(--t4)">12mo</span></div><div style="display:flex;align-items:baseline;gap:6px"><span class="m" style="font-size:10px;font-weight:700;color:${cls.color}">${cls.label}</span></div></div>`:"";
+  const summary=cls?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+     <div style="display:flex;align-items:baseline;gap:6px">
+      <span class="m" style="font-size:16px;font-weight:800;color:${payColor(e.d_pay_12)}">${fmtK(e.d_pay_12)}</span>
+      <span class="m" style="font-size:8px;color:var(--t4)">12mo</span>
+      ${tt?`<span class="m" style="font-size:8px;font-weight:700;color:${tt.color};margin-left:4px">${tt.label}</span>`:""}
+     </div>
+     <div style="text-align:right">
+      <div class="m" style="font-size:10px;font-weight:800;color:${cls.color}">${cls.label}</div>
+      ${ratioStr?`<div class="m" style="font-size:9px;font-weight:700;margin-top:1px"><span style="color:${ratioColor}">${ratioStr}</span> <span style="color:var(--t4);font-weight:400">priv:gov</span></div>`:""}
+      ${splitLine?`<div class="m" style="font-size:8px;margin-top:1px">${splitLine}</div>`:""}
+     </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
+     <div><div class="m" style="font-size:7px;color:var(--t4)">PRIVATE</div><div class="m" style="font-size:12px;font-weight:700;color:${payColor(e.d_priv_12)}">${fmtK(e.d_priv_12)}</div></div>
+     <div><div class="m" style="font-size:7px;color:var(--t4)">GOVERNMENT</div><div class="m" style="font-size:12px;font-weight:700;color:${govColor(e.d_gov_12)}">${fmtK(e.d_gov_12)}</div></div>
+     <div><div class="m" style="font-size:7px;color:var(--t4)">U-3${e.u3_yoy!=null?` YoY`:""}</div><div style="display:flex;align-items:baseline;gap:4px"><span class="m" style="font-size:12px;font-weight:700;color:var(--t2)">${fmtPct(e.u3)}</span>${e.u3_yoy!=null?`<span class="m" style="font-size:8px;color:${uColor(e.u3_yoy)}">${uArrow(e.u3_yoy)}${fmtPP(e.u3_yoy)}</span>`:""}</div></div>
+    </div>
+   </div>`:"";
   return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">${headerHTML}${summary}</div>`;
  }
  /* Full expanded view */
@@ -421,7 +498,7 @@ function renderEmploymentContext(){
     <div class="m" style="font-size:14px;font-weight:700;color:${payColor(e.d_pay_3_ann)};margin-top:2px">${fmtK(e.d_pay_3_ann)}</div>
    </div>
   </div>
-  ${cls?`<div style="margin:10px 0;padding:8px 10px;background:${cls.bg};border:1px solid ${cls.color}30;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px"><span class="m" style="font-size:10px;font-weight:800;color:${cls.color}">${cls.label}</span>${shareLine}</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:2px">${cls.desc}</div></div>`:""}
+  ${cls?`<div style="margin:10px 0;padding:8px 10px;background:${cls.bg};border:1px solid ${cls.color}30;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px"><span class="m" style="font-size:10px;font-weight:800;color:${cls.color}">${cls.label}</span><div style="text-align:right">${ratioLine?`<div style="display:flex;align-items:baseline;gap:4px;justify-content:flex-end">${ratioLine}</div>`:""}${splitLine?`<div class="m" style="font-size:9px;margin-top:2px">${splitLine}</div>`:""}</div></div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">${cls.desc}</div></div>`:""}
   <div style="margin-top:10px;padding:10px;background:rgba(0,0,0,.2);border-radius:6px">
    <div class="m" style="font-size:8px;color:var(--t4);margin-bottom:6px">DECOMPOSITION · 12MO TOTAL · 3MO ANNUALIZED</div>
    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
@@ -470,11 +547,11 @@ function renderEmploymentContext(){
     </div>
    </div>
   </div>
-  <div class="m" style="font-size:8px;color:var(--t5);line-height:1.6;margin-top:10px">Gov share of new jobs = ΔGovt / (ΔGovt + ΔPriv) when both growing. Median 1948-2025: 10%. Above 30% = headline propped by government. When private and gov move in opposite directions, the ratio is omitted and the contrast is shown in absolute terms. U-3 = headline unemployment; U-6 adds underemployed + discouraged. LFPR = % of working-age in labor force. EM ratio = % of working-age employed.</div>
+  <div class="m" style="font-size:8px;color:var(--t5);line-height:1.6;margin-top:10px">Priv:Gov ratio = ΔPrivate / ΔGov, expressed as private jobs per government job. Negative ratio (red) = sectors moving in opposite directions. Parens like (5.0 : 1) = both shrinking. Percentage split = each sector's share of net change (signs preserved). >100% (amber) or negative (red) flags offsetting context: in lean expansion the private side exceeds 100% because government is offsetting growth. Median 1948-2025 (growth periods): ~10:1. U-3 = headline unemployment; U-6 adds underemployed + discouraged. LFPR = % of working-age in labor force. EM ratio = % of working-age employed.</div>
  </div>`;}
 
-/* Policy Uncertainty card — extracted from F&G/AAII/EPU panel in v17.9 so it
-   sits as its own card after Employment Context. Display only, no scoring. */
+/* Policy Uncertainty card — extracted from F&G/AAII/EPU panel in v17.9.
+   v17.11: collapsible (default closed each session). Display only, no scoring. */
 function renderPolicyUncertainty(){
  const epuObs=st.d.epu||[];
  if(!epuObs.length)return"";
@@ -485,11 +562,30 @@ function renderPolicyUncertainty(){
  const epuLabel=epuVal>300?'Crisis':epuVal>200?'Major':epuVal>150?'Elevated':'Normal';
  const lD=epuObs[epuObs.length-1].date;
  const dS=lD?new Date(lD+"T00:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Daily";
- return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+ const ex=st.epuEx;
+ const headerHTML=`<div onclick="togglePU()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;${ex?'margin-bottom:10px':''}">
    <span class="m" style="font-size:10px;color:var(--t4);letter-spacing:.1em">🗳️ POLICY UNCERTAINTY</span>
-   <span class="m" style="font-size:8px;color:var(--t4)">${dS} · Display only</span>
-  </div>
+   <div style="display:flex;align-items:center;gap:8px"><span class="m" style="font-size:8px;color:var(--t4)">${dS} · Display only</span><span class="m" style="font-size:9px;color:var(--t4)">${ex?"▲":"▼"}</span></div>
+  </div>`;
+ /* Collapsed: just EPU + label + z-score in one row */
+ if(!ex){
+  return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">
+   ${headerHTML}
+   <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)">
+    <div style="display:flex;align-items:baseline;gap:6px">
+     <span class="m" style="font-size:16px;font-weight:800;color:${epuC}">${epuVal.toFixed(0)}</span>
+     <span class="m" style="font-size:8px;color:var(--t4)">EPU</span>
+    </div>
+    <div style="text-align:right">
+     <span class="m" style="font-size:10px;font-weight:700;color:${epuC}">${epuLabel}</span>
+     <span class="m" style="font-size:9px;color:var(--t4);margin-left:6px">${epuZ.toFixed(2)}σ</span>
+    </div>
+   </div>
+  </div>`;
+ }
+ /* Expanded: full detail */
+ return `<div style="background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:14px 16px;margin-bottom:12px">
+  ${headerHTML}
   <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
    <div><span class="m" style="font-size:22px;font-weight:800;color:${epuC}">${epuVal.toFixed(0)}</span><span class="m" style="font-size:10px;color:var(--t4);margin-left:4px">EPU</span></div>
    <div class="m" style="font-size:10px;font-weight:700;color:${epuC}">${epuLabel}</div>
@@ -599,7 +695,7 @@ const TIERS={leading:{label:"LEADING",color:"#42A5F5",desc:"75% of recession sco
 const ST={clear:{c:"#00E676",bg:"rgba(0,230,118,.07)",b:"rgba(0,230,118,.22)",l:"CLEAR"},watch:{c:"#78909C",bg:"rgba(120,144,156,.06)",b:"rgba(120,144,156,.18)",l:"WATCH"},caution:{c:"#FFC107",bg:"rgba(255,193,7,.07)",b:"rgba(255,193,7,.22)",l:"CAUTION"},warning:{c:"#FF9100",bg:"rgba(255,145,0,.07)",b:"rgba(255,145,0,.22)",l:"WARNING"},stress:{c:"#FF1744",bg:"rgba(255,23,68,.07)",b:"rgba(255,23,68,.22)",l:"STRESS"},unknown:{c:"#555",bg:"rgba(85,85,85,.05)",b:"rgba(85,85,85,.15)",l:"—"}};
 const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx:true,yc:false,cr:false,ic:false,sa:false,mf:false,vx:false,cape:false,co:false});
 
-let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},msdEx:false,empEx:false,fgEx:false,ld:false,err:null,upd:null,px:0,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
+let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},msdEx:false,empEx:false,fgEx:false,epuEx:false,ld:false,err:null,upd:null,px:0,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
  bt:{open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false}};
 
 async function ff(sid,key,lim=24,freq=""){let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;const ord=[st.px,...[0,1,2,3].filter(i=>i!==st.px)];for(const i of ord){try{const r=await fetch(PX[i](base),{signal:AbortSignal.timeout(15000)});if(!r.ok)continue;const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{continue}if(j.observations){st.px=i;return j.observations.filter(o=>o.value!==".").reverse()}if(j.contents){try{const p=JSON.parse(j.contents);if(p.observations){st.px=i;return p.observations.filter(o=>o.value!==".").reverse()}}catch{}}}catch{continue}}throw new Error(sid)}
@@ -1161,7 +1257,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.10 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.12 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -1404,6 +1500,8 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (Hybrid F symmetric — tiered absolute 13/12/11 + above-MA-gated z-gradient) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
+ <strong style="color:var(--t4)">v17.12</strong>: Employment Context — percentage split added alongside Priv:Gov ratio. Addresses lean-expansion-reads-as-loss problem: "-1.97 : 1" looks like private is losing 1.97 jobs per gov job, but in lean expansion private is actually growing. New split uses |net| as denominator so signs of each delta are preserved: lean expansion shows Priv +204% (amber, exceeds whole) / Gov -104% (red, offsetting); gov-masked decline shows Priv -200% (red, shrinking) / Gov +100% (amber, padding); normal cases show clean 0-100% splits in neutral colors; contraction shows both percentages negative. Ratio's negative number portion now colored red inline. No scoring changes.<br>
+ <strong style="color:var(--t4)">v17.11</strong>: Employment Context UX. Gov share % replaced with Priv:Gov ratio ("10.0 : 1") — reads more intuitively as "private jobs per government job". Sign-aware: both positive → plain, both negative → parens like "(5.0 : 1)" to flag contraction, mixed signs → negative ratio like "-2.08 : 1" indicating sectors moving opposite directions. Negative job deltas now consistently displayed in red. Collapsed view now shows priv/gov 12mo deltas, Priv:Gov ratio, and U-3 with YoY delta. Policy Uncertainty card now collapsible (default closed each session). No scoring changes.<br>
  <strong style="color:var(--t4)">v17.10</strong>: UX refinements. Employment Context now collapsible (default closed each session) with FRED source links inline next to every metric (PAYEMS, USPRIV, USGOVT, CES9091000001, UNRATE, U6RATE, CIVPART, EMRATIO). Gov share calculation fixed: only computes ratio when ΔPriv and ΔGov share the same sign — eliminates confusing -100%+ outputs when sectors move in opposite directions. Mixed-sign cases now show contrast in absolute terms ("Gov +50K offset against private -100K") with clearer labels (GOV-MASKED DECLINE, LEAN EXPANSION). CNN F&amp;G card: 7 sub-indicator breakdown added (Stock Price Momentum, Strength, Breadth, Put/Call, Market Volatility, Safe Haven Demand, Junk Bond Demand) — each shown with score, rating, and mini-meter. Collapsible (default closed). No scoring changes.<br>
  <strong style="color:var(--t4)">v17.9</strong>: Layout reorganization + new Employment Context card. NEW: Employment Context (between Economy &amp; Inflation and Indicators) — PAYEMS/Private/Government with federal vs state+local breakdown, 12mo &amp; 3mo annualized windows, 6-bucket classification (Private-led/Normal/Gov-leaning/Gov-heavy/Lean/Contraction), gov share of net new jobs (median 1948-2025: 10%), unemployment depth (U-3, U-6, LFPR, EMRATIO with YoY deltas). Display only — no scoring impact. MOVED: EPU/Policy Uncertainty extracted as its own card. AAII full card moved into Indicators Market Signals tier under Consumer Sentiment. COLLAPSED: Market Signal Detail panel — meter, override, capitulation banners always visible; VIX/CAPE/Sentiment/Regime cards default-collapsed every session, tap to expand.<br>
  <strong style="color:var(--t4)">v17.8</strong>: VIX sell-side hybrid restructured to mirror buy-side architecture. Tiered absolute (VIX&lt;13/12/11 → +1/+2/+3) replaces single VIX&lt;12 trigger. Z-gradient (z&lt;-1.0/-1.25 → +1/+2) now requires above 10mo MA — symmetric to existing buy-side gate. Validated on full 16yr Strategy Matrix sim: +312.3% vs v17.7 +302.4% (+9.9pp), same -30.1% max DD, 41% fewer noisy SELL days.<br>
@@ -1419,9 +1517,10 @@ function toggleBT(){st.bt.open=!st.bt.open;render()}
 function toggleMSD(){st.msdEx=!st.msdEx;render()}
 function toggleEmp(){st.empEx=!st.empEx;render()}
 function toggleFG(){st.fgEx=!st.fgEx;render()}
+function togglePU(){st.epuEx=!st.epuEx;render()}
 function togOv(k){st.bt.ov[k]=!st.bt.ov[k];render()}
 function setWindow(w){st.bt.window=w;render();setTimeout(bindBTChart,120)}
-function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.msdEx=false;st.empEx=false;st.fgEx=false;st.momentum=null;st.aaii=null;st.fg=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
+function rst(){st.key=null;st.d={};st.mc={};st.mcFull={};st.ss={};st.ex={};st.mcEx={};st.msdEx=false;st.empEx=false;st.fgEx=false;st.epuEx=false;st.momentum=null;st.aaii=null;st.fg=null;st.breadth=null;st.cape=null;st.capeSource=null;st.capeFreshness=null;st.bt={open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false};if(st.autoRef)clearInterval(st.autoRef);st.autoRef=null;localStorage.removeItem("rr23");render()}
 render();if(st.key)loadAll();
 </script>
 </body>
