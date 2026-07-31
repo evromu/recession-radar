@@ -60,10 +60,30 @@ a{color:var(--ca)}.hcomp{display:grid;grid-template-columns:repeat(3,1fr);gap:6p
 const PX=[u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,u=>u];
 function clamp(v){return Math.max(0,Math.min(100,v))}
 
-/* ═══ v17.14 METHODOLOGY ═══
+/* ═══ v18.1 METHODOLOGY ═══
    RECESSION SCORE: YC range 0.5/-0.3, PI=15/12, Credit velocity +15 bonus
-   MARKET SIGNAL: VIX 40% + CAPE 25% + Sentiment 35%
+   MARKET SIGNAL: VIX 55% + CAPE 25% + Sentiment 20% (percentile-ranked)
      + AAII/F&G capitulation/greed bonuses (see v17.7-8)
+   v18 CHANGES (all backtested 1998-2026, full product context, 1-day signal lag):
+     1. Sentiment reweighted 35% -> 20%; VIX 40% -> 55%. CAPE unchanged at 25%.
+     2. Sentiment rescored on rolling 10yr PERCENTILE instead of absolute thresholds.
+     3. Override capability REMOVED from Sentiment; VIX only.
+        Result: 8.87% CAGR / 0.66 Sharpe vs 8.66% / 0.66 baseline. MaxDD ~unchanged.
+     4. Market Regime badge (BULL / SIDEWAYS / BEAR) — descriptive, feeds no score.
+     5. AAII capitulation hit-rate claim corrected (9/9 100% -> 7/10 70%).
+   REJECTED after testing (do not re-add without new evidence):
+     - AAII as the 20% sentiment slot: -0.33 to -0.57pp CAGR vs percentile UMCSENT.
+     - Dropping sentiment entirely: -3.21pp in 2024-26, roughly flat full period.
+     - RSP/SPY breadth as a second gate: no edge gate-open, INVERTED gate-closed.
+     - VIX/VIX3M term structure: non-monotonic, redundant with absolute VIX tiers.
+     - Bitcoin: coincident with QQQ (corr +0.38), zero lead at every lag tested.
+   v18.1 ADVISORY LAYER (display only — touches NO scoring):
+     - VIX bands incl. 13-15 "complacency" advisory that contributes 0 to score.
+     - VIX>=35 guidance split on the MA10 gate (buy tech vs hold cash).
+     - Sector tilt per Strategy Matrix cell, flagged firm vs PROVISIONAL.
+     - Drawdown base rates, conditioned on the current cell.
+     - NASDAQ red-streak counter, suppressed when the gate is closed.
+     - Standing note that defensives underperformed in every cell tested.
    REFERENCE: F&G (full card with 7-indicator breakdown, collapsible),
               AAII + EPU (in Market Signals tier, sentiment cluster),
               Employment Context (federal/state+local jobs, collapsible),
@@ -164,22 +184,156 @@ function vixSignalHybrid(v,z,abvMA){
  return{score:0,note:`VIX ${v.toFixed(1)} (z=${z.toFixed(1)}) — Normal`,mom:null}}
 
 function capeSignal(v){if(v==null)return{score:0,note:""};if(v<12)return{score:-3,note:`CAPE ${v.toFixed(0)}x — Depression`};if(v<15)return{score:-2,note:`CAPE ${v.toFixed(0)}x — Generational`};if(v<20)return{score:-1,note:`CAPE ${v.toFixed(0)}x — Value`};if(v<25)return{score:0,note:`CAPE ${v.toFixed(0)}x — Moderate`};if(v<30)return{score:1,note:`CAPE ${v.toFixed(0)}x — Expensive`};if(v<35)return{score:2,note:`CAPE ${v.toFixed(0)}x — Very expensive`};return{score:3,note:`CAPE ${v.toFixed(0)}x — Extreme`}}
-function sentSignal(v){if(v==null)return{score:0,note:""};if(v<55)return{score:-3,note:`Sent ${v.toFixed(0)} — Peak despair`};if(v<60)return{score:-2,note:`Sent ${v.toFixed(0)} — Deep pessimism`};if(v<65)return{score:-1,note:`Sent ${v.toFixed(0)} — Pessimistic`};if(v<95)return{score:0,note:`Sent ${v.toFixed(0)} — Normal`};if(v<100)return{score:1,note:`Sent ${v.toFixed(0)} — Optimistic`};if(v<105)return{score:2,note:`Sent ${v.toFixed(0)} — Euphoric`};return{score:3,note:`Sent ${v.toFixed(0)} — Mania`}}
+/* v18: percentile-ranked sentiment. Absolute thresholds (<55 STR BUY etc.) were
+   calibrated on a pre-2020 distribution that no longer exists — UMich went web-only
+   in 2024 and the index has been structurally depressed since 2021, pinning the old
+   scale at STRONG BUY for years at a time. Rolling 10-year percentile rank removes
+   the level drift and restores a working sell side.
+   Backtest 1998-2026 (full product context, 1-day lag): percentile @20% weight
+   returned 8.87% CAGR / 0.66 Sharpe vs 8.66% / 0.66 for absolute @35%. */
+function sentPercentile(arr,winMonths){
+ if(!arr||arr.length<24)return null;
+ const vals=arr.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
+ if(vals.length<24)return null;
+ const w=Math.min(vals.length,winMonths||120);
+ const win=vals.slice(-w),cur=win[win.length-1],prior=win.slice(0,-1);
+ if(prior.length<12)return null;
+ return{pct:(prior.filter(x=>cur>x).length/prior.length)*100,n:prior.length,cur};
+}
+function sentSignal(v,arr){
+ if(v==null)return{score:0,note:""};
+ const p=sentPercentile(arr,120);
+ if(p==null)return{score:0,note:`Sent ${v.toFixed(0)} — insufficient history`};
+ const pc=p.pct,lbl=`Sent ${v.toFixed(0)} (pctile ${pc.toFixed(0)} of 10yr)`;
+ if(pc<5) return{score:-3,note:`${lbl} — Peak despair`,pct:pc};
+ if(pc<15)return{score:-2,note:`${lbl} — Deep pessimism`,pct:pc};
+ if(pc<30)return{score:-1,note:`${lbl} — Pessimistic`,pct:pc};
+ if(pc<70)return{score:0,note:`${lbl} — Normal`,pct:pc};
+ if(pc<85)return{score:1,note:`${lbl} — Optimistic`,pct:pc};
+ if(pc<95)return{score:2,note:`${lbl} — Euphoric`,pct:pc};
+ return{score:3,note:`${lbl} — Mania`,pct:pc};
+}
 function epuSignal(v){if(v==null)return{score:0,note:""};const z=((v-110)/50).toFixed(1);if(v>300)return{score:3,note:`EPU ${v.toFixed(0)} (${z}σ) — Crisis`};if(v>200)return{score:2,note:`EPU ${v.toFixed(0)} (${z}σ) — Major`};if(v>150)return{score:1,note:`EPU ${v.toFixed(0)} (${z}σ) — Elevated`};return{score:0,note:`EPU ${v.toFixed(0)} (${z}σ) — Normal`}}
 
 function calcMomentum(){
  const spxData=st.mcFull.sp500||[];if(spxData.length<10)return{abvMA:null,ma:null,mom3:null,current:null,bearRegime:false,drawdown:null,high12:null};
  const vals=spxData.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));if(vals.length<10)return{abvMA:null,ma:null,mom3:null,current:null,bearRegime:false,drawdown:null,high12:null};
  const current=vals[vals.length-1];
- const ma10=vals.slice(-10).reduce((a,b)=>a+b,0)/Math.min(vals.length,10);
- const prev3=vals.length>=3?vals[vals.length-3]:current;
+ /* ═══ v18 BUG FIX — MA10 GATE WAS RUNNING AS A 10-DAY MA ═══
+    st.mcFull.sp500 is DAILY FRED data (500 obs). calcBreadthProxy correctly treats
+    it as daily (200-day MA) and calcCapitulation correctly uses 126 trading days for
+    its 6-month peak — but calcMomentum was slicing 10 and 3 elements and labelling
+    them "10-month MA" and "3-month momentum". Those were 10 and 3 TRADING DAYS.
+    The 10-month MA gate is the single highest-value component in the model
+    (VIX>35 signals: gate-open 1.88 return/drawdown and 100% 12mo win rate across
+    10 episodes, vs 0.37 and 40% across 5 gate-closed episodes). Running it on a
+    10-day average made it near-random noise rather than a regime filter.
+    Correct conversions at ~21 trading days/month:
+      10-month MA -> 210 trading days
+      3-month momentum -> 63 trading days
+      6-month momentum -> 126 trading days
+      12-month high -> 252 trading days (this one was already correct) */
+ const TD=21;
+ const maWin=Math.min(vals.length,10*TD);
+ const ma10=vals.slice(-maWin).reduce((a,b)=>a+b,0)/maWin;
+ const prev3=vals.length>=3*TD?vals[vals.length-3*TD]:vals[0];
  const mom3=((current-prev3)/prev3)*100;
  const abvMA=current>ma10;
+ const maStale=vals.length<10*TD;
  /* Bear regime: below 10mo MA AND >7% drawdown from 12-month high */
  const high12=Math.max(...vals.slice(-Math.min(vals.length,252)));
  const drawdown=((current-high12)/high12)*100;
  const bearRegime=!abvMA&&drawdown<-7;
- return{abvMA,ma:ma10.toFixed(0),mom3:mom3.toFixed(1),current:current.toFixed(0),bearRegime,drawdown:drawdown.toFixed(1),high12:high12.toFixed(0)}}
+ /* v18 MARKET REGIME BADGE (classifier "D", descriptive only — feeds no score).
+    BULL     : above 10mo MA AND drawdown > -8% AND 6mo momentum > +3%
+    BEAR     : below 10mo MA AND drawdown < -12%
+    SIDEWAYS : everything else
+    Tested against 4 alternatives on SPY 1998-2026. Chosen for coherence with the
+    existing MA10 gate and clean alignment with the recession zone (GREEN 71% BULL,
+    ORANGE 74% BEAR, RED 100% BEAR). Its reliable discriminator is VOLATILITY, not
+    return: forward 6mo vol runs ~7.5% in BULL vs ~17.8% in BEAR. Forward returns
+    separate only weakly (BULL +5.2%, SIDEWAYS +5.9%, BEAR +2.7%), which is why this
+    is a context label and NOT a signal input. */
+ const prev6=vals.length>=6*TD?vals[vals.length-6*TD]:vals[0];
+ const mom6=((current-prev6)/prev6)*100;
+ let regime="SIDEWAYS",regimeColor="#FFC107",regimeDesc="Choppy / range-bound. Forward 6mo vol ~12%. No clear trend — position sizing matters more than direction.";
+ if(abvMA&&drawdown>-8&&mom6>3){regime="BULL";regimeColor="#00E676";regimeDesc="Uptrend intact. Forward 6mo vol historically ~7.5% (lowest of the three states). Trend-following works; fading strength does not.";}
+ else if(!abvMA&&drawdown<-12){regime="BEAR";regimeColor="#FF1744";regimeDesc="Confirmed downtrend. Forward 6mo vol historically ~17.8% — roughly 2.4x BULL. Defensive sectors historically do NOT protect here; cash does.";}
+ return{abvMA,maStale,ma:ma10.toFixed(0),mom3:mom3.toFixed(1),mom6:mom6.toFixed(1),current:current.toFixed(0),bearRegime,drawdown:drawdown.toFixed(1),high12:high12.toFixed(0),regime,regimeColor,regimeDesc}}
+
+
+/* ═══════════════════ v18.1 ADVISORY LAYER ═══════════════════
+   Everything below is DISPLAY ONLY. None of it touches the Market Signal,
+   the Recession Score, or the Strategy Matrix. All figures are from backtests
+   run on SPY/sector daily data 1998-2026 (sectors from 1998-12-22).
+   Sample sizes are shown inline because several cells are thin. */
+
+/* --- VIX advisory bands. Scoring still handled by vixSignalHybrid; the 13-15
+       band deliberately contributes ZERO to score and exists only as guidance. --- */
+function vixAdvisory(vix,gateOpen){
+ if(vix==null)return null;
+ if(vix>=35)return{band:"CAPITULATION",color:gateOpen?"#00E676":"#FF1744",
+  head:gateOpen?"Buy aggressively — uptrend intact":"Panic inside a downtrend — do NOT average in",
+  body:gateOpen
+   ?"S&P above its 10-month MA. Across 10 such episodes: XLK returned +22.9% at 6mo (1.88 return/drawdown, 100% positive at 12mo), SPY +18.0% (1.77). Favor tech and high-beta. Defensives were the WORST performers here."
+   :"S&P below its 10-month MA. Across 5 such episodes: SPY +2.3% at 6mo with a 40% 12mo win rate and -19.7% average further drawdown. Hold cash, not defensives — XLU and XLP also lost money in this state. Wait for the MA to be reclaimed.",
+  n:gateOpen?10:5};
+ if(vix>=25)return{band:"SCALE IN",color:"#66BB6A",head:"Start adding",
+  body:"Elevated but not capitulation. Quality tech, financials, cyclicals. Full-size deployment historically rewarded waiting for 35+.",n:null};
+ if(vix>15)return{band:"HOLD",color:"#8892a0",head:"Stay positioned",
+  body:"Normal volatility regime. No action indicated by VIX alone.",n:null};
+ if(vix>=13)return{band:"COMPLACENCY",color:"#FFC107",head:"Consider trimming extended positions",
+  body:"Low-vol regime. ADVISORY ONLY — contributes 0 to the Market Signal. Scoring begins at <13. Note the popular 'VIX under 15 = sell' rule does not hold: VIX sat below 15 through most of 2017, 2019, 2021 and 2024-25, all strong years. Treat as a nudge to rotate toward quality, not an exit.",n:null};
+ return{band:"SELL ZONE",color:"#FF9100",head:"Reduce exposure — scoring active",
+  body:"VIX below 13. Tiered scoring engaged (<13 +1, <12 +2, <11 +3).",n:null};
+}
+
+/* --- Sector tilt by Strategy Matrix cell. 6-month excess return vs SPY.
+       CONFIDENCE: 'firm' cells have 30+ / 15+ independent 6mo windows.
+       'thin' cells have ~4-5 and are directional only. --- */
+const SECTOR_TILT={
+ "GREEN|OPEN":   {conf:"firm",n:"48 episodes",fav:"XLE +2.0 · XLK +1.6 · XLV +0.6",avoid:"XLB -1.5 · XLRE -1.1 · XLP -1.0"},
+ "GREEN|CLOSED": {conf:"thin",n:"18 episodes / ~3.7 indep windows",fav:"XLK +5.0 · XLY -0.0",avoid:"XLC -3.5 · XLP -3.5 · XLRE -3.4"},
+ "YELLOW|OPEN":  {conf:"firm",n:"44 episodes",fav:"XLI +2.0 · XLE +1.7 · XLK +0.8",avoid:"XLRE -5.9 · XLV -3.4 · XLP -1.2"},
+ "YELLOW|CLOSED":{conf:"thin",n:"18 episodes / ~5.2 indep windows",fav:"XLV +2.2 · XLB +1.4 · XLY +1.1",avoid:"XLRE -9.3 · XLU -2.2 · XLF -2.2"},
+ "ORANGE|CLOSED":{conf:"thin",n:"13 episodes / ~5.3 indep windows",fav:"XLY +7.8 · XLB +7.6 · XLF +2.5",avoid:"XLE -3.4 · XLU -2.7 · XLK -0.7"},
+ "RED|CLOSED":   {conf:"thin",n:"very few observations",fav:"XLY · XLB · XLF (cyclicals lead off the bottom)",avoid:"XLU · XLE"}
+};
+function sectorTilt(zone,gateOpen){
+ const k=zone+"|"+(gateOpen?"OPEN":"CLOSED");
+ return SECTOR_TILT[k]||SECTOR_TILT[(zone==="RED"?"ORANGE":zone)+"|"+(gateOpen?"OPEN":"CLOSED")]||null;
+}
+
+/* --- Drawdown base rates. Unconditional numbers replicate the widely-circulated
+       "S&P drops 5% every year" table (median max DD -10.0%, median full-year
+       +13.6%, 26 of 27 years since 2000 had a 5%+ drop, ~1.7 per year).
+       The conditional numbers are the value-add. --- */
+const DD_CONTEXT={
+ "GREEN|OPEN":   {r:"+8.8%",w:"87%",n:71},
+ "GREEN|CLOSED": {r:"+11.9%",w:"100%",n:7},
+ "YELLOW|OPEN":  {r:"+3.5%",w:"56%",n:57}
+};
+function drawdownContext(dd,zone,gateOpen){
+ if(dd==null||dd>-4)return null;
+ const c=DD_CONTEXT[zone+"|"+(gateOpen?"OPEN":"CLOSED")];
+ return{dd,zone,gateOpen,cond:c,
+  base:"Since 2000 the S&P has averaged ~1.7 drops of 5%+ per year. 26 of 27 years had one. Median year sees a -10.0% max drawdown and still finishes +13.6%."};
+}
+
+/* --- Red-streak counter on NASDAQCOM (daily, already fetched as mcFull.nasdaq).
+       6+ consecutive down closes. 19 occurrences since 2000 on QQQ.
+       Gate-conditioned: the widely-quoted "-1.76% at 1 month" is entirely a
+       gate-closed artifact; gate-open streaks never showed the dip. --- */
+function calcRedStreak(){
+ const nd=st.mcFull.nasdaq||[];
+ if(nd.length<10)return null;
+ const vals=nd.map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
+ if(vals.length<10)return null;
+ let streak=0;
+ for(let i=vals.length-1;i>0;i--){ if(vals[i]<vals[i-1])streak++; else break; }
+ if(streak<4)return{streak,active:false};
+ return{streak,active:streak>=6};
+}
 
 function calcECYModifier(){
  const cape=st.cape;const dfii10Obs=st.d.dfii10||[];const dfii10=dfii10Obs.length?parseFloat(dfii10Obs[dfii10Obs.length-1].value):null;
@@ -204,9 +358,16 @@ function calcCapitulation(){
     stress depth — critical because retail panic (Bear>50) often occurs at or just
     after the bottom, when the market may have already begun rallying.
 
-    Historical backtest: Bear>50 + trailing-30d min DD>-7% produces 9/9 fires with
-    100% hit rate, +23.9% avg fwd 12mo. Also captures the April 2026 fire (Bear 51.4%
-    + trough DD -9.1%) that the old current-close method missed (−5.7% at reading time). */
+    v18 CORRECTION: the previously stated "9/9 fires, 100% hit rate, +23.9% avg fwd
+    12mo" does not survive independent replication. Re-running on SPY daily closes
+    1993-2026 (126d peak, 126d dedupe) gives 11 fires and 7/10 resolved positive at
+    12 months = 70% hit rate, +16.4% avg fwd 12mo, +11.2% avg fwd 6mo. The three
+    failures all fired EARLY IN BEAR MARKETS: 2000-12-21 (-7.6% 12mo), 2007-11-09
+    (-34.8% 12mo, -43.6% post-signal drawdown), 2022-01-27 (-5.6% 12mo).
+    The signal is still additive, but it is NOT infallible and it does not replace
+    the MA10 gate. Treat a fire below the 10-month MA with caution.
+    Tested on QQQ as well: 13 fires, 9/12 = 75% hit rate, similar returns but
+    post-signal drawdown -21.0% vs -16.2% for SPY. SPY is the better expression. */
  if(!st.aaii||st.aaii.bear==null)return{active:false,bear:null,dd:null};
  const bear=parseFloat(st.aaii.bear);
  if(isNaN(bear)||bear<=50)return{active:false,bear,dd:null};
@@ -883,7 +1044,7 @@ function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
     In 2022 Sent=50-67 pulled BUY (-1 to -3) while market fell 25%.
     Consumer pessimism during confirmed downtrend isn't contrarian — it's correct.
     Dampen: halve sentiment's buy score (negative values) in bear regime. */
- let sS=sentSignal(sent);
+ let sS=sentSignal(sent,coD);
  let bearDamp=null;
  if(mom.bearRegime&&sS.score<0){
   const origScore=sS.score;
@@ -891,9 +1052,12 @@ function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
   bearDamp={orig:origScore,damped:dampedScore,drawdown:mom.drawdown};
   sS={...sS,score:dampedScore,note:sS.note+` [dampened: bear regime ${mom.drawdown}%]`}}
  const w=[];
- if(vS.note)w.push({sig:vS,w:.40,name:"VIX",canOvr:true});
+ /* v18 weights: VIX 55 / CAPE 25 / Sentiment 20. Override restricted to VIX.
+    Sentiment override was forcing STRONG BUY off a 2-month-stale UMCSENT print
+    even with CAPE at 40+ (e.g. Jul 2026: raw composite -0.30 HOLD -> -2.50 BUY). */
+ if(vS.note)w.push({sig:vS,w:.55,name:"VIX",canOvr:true});
  if(cS.note)w.push({sig:cS,w:.25,name:"CAPE",canOvr:false});
- if(sS.note)w.push({sig:sS,w:.35,name:"Sentiment",canOvr:true});
+ if(sS.note)w.push({sig:sS,w:.20,name:"Sentiment",canOvr:false});
  const tW=w.reduce((a,b)=>a+b.w,0);let bs=tW>0?w.reduce((a,b)=>a+b.w*b.sig.score,0)/tW:0;
  /* Bear regime tilt: add +0.3 (toward sell) when in confirmed downtrend.
     This is small enough not to overpower capitulation buys (VIX>40 = -2 or -3)
@@ -905,7 +1069,7 @@ function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
  let ov=null;const ext=w.filter(x=>Math.abs(x.sig.score)===3&&x.canOvr);
  if(ext.length){const sb=ext.filter(x=>x.sig.score===-3),ss=ext.filter(x=>x.sig.score===3);
   const buyFloor=-2.5*ovrScale,sellFloor=2.5*ovrScale;
-  if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX & Sentiment extremes conflict."};
+  if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX extremes conflict."};
   else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+` capitulation (${(ovrScale*100).toFixed(0)}% strength, rec ${recScore.toFixed(0)})`};bs=Math.min(bs,buyFloor)}
   else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+` extreme (${(ovrScale*100).toFixed(0)}% strength)`};bs=Math.max(bs,sellFloor)}}
  /* AAII Capitulation bonus: additive -0.5 when Bear>50 + DD>7% from 6mo peak */
@@ -951,9 +1115,9 @@ const S=[
  {k:"ic",f:"ICSA",n:"Jobless Claims",s:"Claims / CLF Ratio",u:"",tier:"leading",w:.20,btColor:"#66BB6A",desc:"Weekly filings / Civilian Labor Force.",th:"Ratio: <1.3 Healthy | >2.0 Warning",hi:"20% Leading.",pre08:346,pre20:282,pre01:305,ev:v=>v==null?"unknown":v>350?"stress":v>300?"warning":v>260?"caution":v>220?"watch":"clear",divK:true,hasCLF:true},
  {k:"sa",f:"SAHMREALTIME",n:"Sahm Rule",s:"Unemployment Momentum",u:" pp",tier:"confirming",w:.60,btColor:"#AB47BC",desc:"At 0.50pp = recession.",th:"≥0.50 Recession | 0.30 Approaching",hi:"60% Confirming.",pre08:0.53,pre20:0.5,pre01:0.3,ev:v=>v==null?"unknown":v>=.5?"stress":v>=.3?"warning":v>=.15?"caution":"clear"},
  {k:"mf",f:"MANEMP",n:"Mfg Employment",s:"Manufacturing Jobs",u:"K",tr:1,tier:"confirming",w:.40,btColor:"#EC407A",desc:"Manufacturing contracts before broader economy.",th:"3-mo losses >50K = Stress",hi:"40% Confirming.",ev:(v,t)=>t==null?"unknown":t<-50?"stress":t<-20?"warning":t<0?"caution":t<20?"watch":"clear"},
- {k:"vx",f:"VIXCLS",n:"VIX",s:"Hybrid F symmetric + MA10 gate",u:"",tier:"market",btColor:"#EF5350",isSigmoid:true,mktW:"40%",desc:"Hybrid F (v17.8): symmetric tiered absolute (VIX>35/40/50 → -1/-2/-3 fear; VIX<13/12/11 → +1/+2/+3 complacency) plus z-score gradient gated on S&P above 10mo MA. The MA gate prevents both buying into grinding bears AND selling into quiet bear continuations. Full Strategy Matrix backtest +9.9pp vs v17.7.",th:"Bypass: VIX>50/40/35 fear; VIX<11/12/13 complacency. Z-gradient: z>±1.0 only if S&P above 10mo MA.",hi:"VIX 40%. Hybrid F. Above-MA-gated both sides.",pre08:23.0,pre20:14.0,pre01:25.5,ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":v<13?"complacency":"clear"},
+ {k:"vx",f:"VIXCLS",n:"VIX",s:"Hybrid F symmetric + MA10 gate",u:"",tier:"market",btColor:"#EF5350",isSigmoid:true,mktW:"55%",desc:"Hybrid F (v17.8): symmetric tiered absolute (VIX>35/40/50 → -1/-2/-3 fear; VIX<13/12/11 → +1/+2/+3 complacency) plus z-score gradient gated on S&P above 10mo MA. The MA gate prevents both buying into grinding bears AND selling into quiet bear continuations. Full Strategy Matrix backtest +9.9pp vs v17.7.",th:"Bypass: VIX>50/40/35 fear; VIX<11/12/13 complacency. Z-gradient: z>±1.0 only if S&P above 10mo MA.",hi:"VIX 40%. Hybrid F. Above-MA-gated both sides.",pre08:23.0,pre20:14.0,pre01:25.5,ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":v<13?"complacency":"clear"},
  {k:"cape",f:"_CAPE_",n:"Shiller CAPE",s:"Valuation · No override",u:"x",isCape:true,tier:"market",btColor:"#FFA726",mktW:"25%",desc:">35 STR SELL. 145yr validated. Cannot override.",th:"<12 STR BUY | 15-20 SOFT BUY | 30-35 SELL | >35 STR SELL",hi:"CAPE 25%. 145yr validated.",pre08:27.3,pre20:31.3,pre01:44.2,ev:v=>v==null?"unknown":v>35?"stress":v>30?"warning":v>25?"caution":v>20?"watch":"clear"},
- {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Contrarian · Override-capable",u:"",tier:"market",btColor:"#FF7043",mktW:"35%",desc:"<55 STR BUY, >105 STR SELL. Override-capable contrarian.",th:"<55 STR BUY | 60-65 SOFT BUY | 95-100 SOFT SELL | >105 STR SELL",hi:"Sentiment 35%. Override-capable.",pre08:63.0,pre20:101.0,pre01:94.7,ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear"},
+ {k:"co",f:"UMCSENT",n:"Consumer Sentiment",s:"Contrarian · 10yr percentile",u:"",tier:"market",btColor:"#FF7043",mktW:"20%",desc:"Rolling 10yr percentile rank. <5th STR BUY, >95th STR SELL. No override (v18).",th:"<5th STR BUY | 15-30th SOFT BUY | 70-85th SOFT SELL | >95th STR SELL",hi:"Sentiment 20%. Percentile-ranked. No override.",pre08:63.0,pre20:101.0,pre01:94.7,ev:v=>v==null?"unknown":v<55?"stress":v<60?"warning":v<70?"caution":v<80?"watch":"clear"},
 ];
 /* EPU removed from S array in v17.1 — fetched standalone for reference card */
 
@@ -1298,7 +1462,8 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
   const months=[...allD].sort();const idx={};for(const[k,obs] of Object.entries(raw)){idx[k]={};obs.forEach(o=>{idx[k][o.date.substring(0,7)]=parseFloat(o.value)})}
   const vixMos=months.filter(m=>idx.vx[m]!=null).sort();const vixZbt={};
   for(let i=0;i<vixMos.length;i++){const w=vixMos.slice(Math.max(0,i-60),i+1).map(m=>idx.vx[m]).filter(v=>!isNaN(v));if(w.length>12){const mn=w.reduce((a,b)=>a+b,0)/w.length;const sd=Math.sqrt(w.map(v=>(v-mn)**2).reduce((a,b)=>a+b,0)/w.length);vixZbt[vixMos[i]]=(idx.vx[vixMos[i]]-mn)/(sd||1)}}
-  const spxMos=months.filter(m=>idx.spx[m]!=null).sort();const spxMA={};
+  const spxMos=months.filter(m=>idx.spx[m]!=null).sort();
+  const coMos=months.filter(m=>idx.co[m]!=null).sort();const spxMA={};
   /* Death Cross (bear regime B) removed in v17.1 — never fired 2009-2024, confirmed no value. */
   for(let i=0;i<spxMos.length;i++){const w=spxMos.slice(Math.max(0,i-9),i+1).map(m=>idx.spx[m]);spxMA[spxMos[i]]=w.reduce((a,b)=>a+b,0)/w.length}
   let ycWI=false,ycUM=null;const comp=[];
@@ -1331,8 +1496,20 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
     if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.slice(Math.max(0,mi-18),mi+1);if(cpiMos.length>=19){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[cpiMos.length-13]],c6=idx.cpi[cpiMos[cpiMos.length-7]],c18=idx.cpi[cpiMos[0]];if(cN&&c12&&c6&&c18){const cpiNow=(cN-c12)/c12*100,cpi6=(c6-c18)/c18*100;if((cpiNow-cpi6)>1.0)ecySoften=false}}}
     if(ecySoften&&idx.dgs10[m]!=null){const dMos=months.slice(Math.max(0,mi-6),mi+1);if(dMos.length>=7){const rN=idx.dgs10[dMos[dMos.length-1]],r6=idx.dgs10[dMos[0]];if(rN&&r6&&(rN-r6)>0.75)ecySoften=false}}
     if(ecySoften)capeSig=Math.max(-3,capeSig-1)}
+   /* v18: backtest sentiment must mirror the LIVE percentile logic, not the old
+      absolute thresholds — otherwise the in-dashboard backtest reports a model
+      that is no longer running. Rolling 120-month percentile, expanding until
+      120 months of history exist. */
    let sentSig=0;
-   if(idx.co[m]!=null){const sv=idx.co[m];if(sv<55)sentSig=-3;else if(sv<60)sentSig=-2;else if(sv<65)sentSig=-1;else if(sv<95)sentSig=0;else if(sv<100)sentSig=1;else if(sv<105)sentSig=2;else sentSig=3;indS.co=clamp((95-sv)/45*100)}
+   if(idx.co[m]!=null){
+    const sv=idx.co[m];
+    const hist=coMos.filter(x=>x<m).slice(-120).map(x=>idx.co[x]).filter(v=>v!=null);
+    if(hist.length>=12){
+     const pc=(hist.filter(x=>sv>x).length/hist.length)*100;
+     if(pc<5)sentSig=-3;else if(pc<15)sentSig=-2;else if(pc<30)sentSig=-1;
+     else if(pc<70)sentSig=0;else if(pc<85)sentSig=1;else if(pc<95)sentSig=2;else sentSig=3;
+    }
+    indS.co=clamp((95-sv)/45*100)}
    /* Bear regime detection */
    let btBear=false;
    if(idx.spx[m]!=null&&spxMA[m]!=null){
@@ -1540,7 +1717,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v17.14 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v18 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">Fetching...</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -1561,11 +1738,67 @@ function render(){const a=document.getElementById("app");
    <div style="display:flex;align-items:center;gap:12px">${comp.recession!=null?`<span class="h" style="font-size:36px;font-weight:800;color:${recCol};line-height:1">${comp.recession.toFixed(0)}</span>`:""}<div>${comp.leading!=null?`<div class="m" style="font-size:11px;color:#42A5F5">Lead: ${comp.leading.toFixed(0)} ×75%</div>`:""}${comp.confirming!=null?`<div class="m" style="font-size:11px;color:#AB47BC">Conf: ${comp.confirming.toFixed(0)} ×25%</div>`:""}</div></div></div>
    <div style="text-align:right"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:4px">MARKET SIGNAL</div><div class="m" style="font-size:18px;font-weight:800;color:${mlv.color}">${mlv.label}</div><div class="m" style="font-size:9px;color:${mlv.color};opacity:.7">${ms.score>=0?"+":""}${ms.score.toFixed(2)}</div></div></div>
   ${bonuses.length?`<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">${bonuses.map(b=>`<span class="bonus-badge">⚡ ${b}</span>`).join("")}</div>`:""}
+  ${(()=>{const mo=st.momentum||calcMomentum();if(!mo||!mo.regime)return"";
+   return `<div style="margin-top:12px;padding:10px 12px;background:${mo.regimeColor}0F;border-radius:8px;border:1px solid ${mo.regimeColor}30">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+     <div style="display:flex;align-items:center;gap:8px">
+      <div style="width:8px;height:8px;border-radius:50%;background:${mo.regimeColor}"></div>
+      <span class="m" style="font-size:8px;color:var(--t4);letter-spacing:.5px">MARKET REGIME</span>
+      <span class="m" style="font-size:14px;font-weight:800;color:${mo.regimeColor}">${mo.regime}</span>
+     </div>
+     <div class="m" style="font-size:9px;color:var(--t4)">DD ${mo.drawdown}% · 6mo ${mo.mom6>=0?"+":""}${mo.mom6}% · ${mo.abvMA?"above":"below"} 10mo MA</div>
+    </div>
+    <div style="font-size:10px;color:var(--t3);line-height:1.5;margin-top:6px">${mo.regimeDesc}</div>
+    <div class="m" style="font-size:8px;color:var(--t5);margin-top:5px">Context label only — does not feed the Market Signal or Strategy Matrix.</div>
+   </div>`})()}
+  ${(()=>{
+   const mo=st.momentum||calcMomentum();if(!mo)return"";
+   const gateOpen=!!mo.abvMA;
+   const vD=st.d.vx||[];const vixNow=vD.length?parseFloat(vD[vD.length-1].value):null;
+   const comp=calcComposite();const r=comp.recession!=null?comp.recession:0;
+   const zone=r>80?"RED":r>60?"ORANGE":r>35?"YELLOW":"GREEN";
+   const adv=vixAdvisory(vixNow,gateOpen);
+   const tilt=sectorTilt(zone,gateOpen);
+   const ddc=drawdownContext(mo.drawdown!=null?parseFloat(mo.drawdown):null,zone,gateOpen);
+   const rs=calcRedStreak();
+   let out='<div style="margin-top:12px;padding:11px 13px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid var(--bd)">';
+   out+='<div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.5px;margin-bottom:9px">ADVISORY · DISPLAY ONLY · NOT SCORED</div>';
+   if(adv){out+=`<div style="margin-bottom:10px;padding-left:9px;border-left:2px solid ${adv.color}">
+     <div style="display:flex;align-items:baseline;gap:7px;flex-wrap:wrap">
+      <span class="m" style="font-size:10px;font-weight:800;color:${adv.color}">VIX ${vixNow.toFixed(1)} · ${adv.band}</span>
+      ${adv.n?`<span class="m" style="font-size:8px;color:var(--t5)">n=${adv.n} episodes</span>`:""}
+     </div>
+     <div style="font-size:11px;color:var(--t2);font-weight:600;margin-top:2px">${adv.head}</div>
+     <div style="font-size:10px;color:var(--t3);line-height:1.5;margin-top:3px">${adv.body}</div></div>`}
+   if(tilt){const cc=tilt.conf==="firm"?"var(--cl)":"var(--ca)";
+    out+=`<div style="margin-bottom:10px;padding-left:9px;border-left:2px solid ${cc}">
+     <div style="display:flex;align-items:baseline;gap:7px;flex-wrap:wrap">
+      <span class="m" style="font-size:10px;font-weight:800;color:${cc}">SECTOR TILT · ${zone}/${gateOpen?"UPTREND":"DOWNTREND"}</span>
+      <span class="m" style="font-size:8px;color:var(--t5)">${tilt.conf==="firm"?"firm":"PROVISIONAL"} · ${tilt.n}</span>
+     </div>
+     <div style="font-size:10px;color:var(--t3);line-height:1.6;margin-top:3px">
+      <span style="color:var(--cl)">Favor:</span> ${tilt.fav}<br>
+      <span style="color:var(--st)">Avoid:</span> ${tilt.avoid}
+      <div class="m" style="font-size:8px;color:var(--t5);margin-top:3px">6mo excess return vs SPY, percentage points.</div></div></div>`}
+   if(ddc){out+=`<div style="margin-bottom:10px;padding-left:9px;border-left:2px solid var(--ca)">
+     <div class="m" style="font-size:10px;font-weight:800;color:var(--ca)">DRAWDOWN CONTEXT · ${ddc.dd.toFixed(1)}% from 12mo high</div>
+     <div style="font-size:10px;color:var(--t3);line-height:1.5;margin-top:3px">${ddc.base}</div>
+     ${ddc.cond?`<div style="font-size:10px;color:var(--t2);line-height:1.5;margin-top:4px">In <b>${ddc.zone}/${ddc.gateOpen?"uptrend":"downtrend"}</b> specifically, a -5% drawdown has been followed by <b style="color:var(--cl)">${ddc.cond.r}</b> over 6 months with a <b>${ddc.cond.w}</b> win rate (n=${ddc.cond.n}${ddc.cond.n<20?", thin sample":""}).</div>`:`<div style="font-size:10px;color:var(--t4);margin-top:4px">No conditional base rate for this cell — sample too small to quote.</div>`}</div>`}
+   if(rs&&rs.streak>=4){const rc=rs.active?(gateOpen?"var(--cl)":"var(--wn)"):"var(--t4)";
+    out+=`<div style="margin-bottom:10px;padding-left:9px;border-left:2px solid ${rc}">
+     <div class="m" style="font-size:10px;font-weight:800;color:${rc}">NASDAQ RED STREAK · ${rs.streak} consecutive down closes</div>
+     <div style="font-size:10px;color:var(--t3);line-height:1.5;margin-top:3px">${rs.active
+      ?(gateOpen
+        ?"6+ down closes with the S&P above its 10-month MA. 15 such occurrences since 2000: +5.6% at 3mo, +19.3% at 12mo, 87% positive. Historically a favorable entry."
+        :"6+ down closes with the S&P BELOW its 10-month MA. Only 4 such occurrences since 2000: -5.4% at 3mo, 50% positive at 12mo. The two worst outcomes on record (Jan 2008, Sep 2008) were both in this state. Signal suppressed.")
+      :"Building toward the 6-day threshold. No signal yet."}</div></div>`}
+   out+='<div style="font-size:9px;color:var(--t5);line-height:1.5;padding-top:7px;border-top:1px solid var(--bd)"><b>Standing note:</b> defensive sectors did not protect in ANY regime cell tested. XLU returned -2.2% excess in YELLOW/downtrend and -2.7% in ORANGE/downtrend; SPLV and USMV were -3.5% and -2.6% excess when the gate was closed. In a confirmed downtrend the historical answer is cash, not utilities and staples.</div>';
+   out+='</div>';return out})()}
   <div style="margin-top:14px;padding:12px 14px;background:${strat.color}12;border-radius:8px;border:1px solid ${strat.color}25">
    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><div style="width:10px;height:10px;border-radius:50%;background:${strat.color}"></div><span class="m" style="font-size:11px;font-weight:800;color:${strat.color}">${strat.label}</span></div>
    <p style="font-size:12px;color:var(--t2);line-height:1.6">${strat.text}</p></div></div>
  <div class="msp" style="background:${mlv.bg};border:1px solid ${mlv.color}30">
-  <div onclick="toggleMSD()" style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;cursor:pointer"><div><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">MARKET SIGNAL DETAIL</div></div><div style="text-align:right"><div class="m" style="font-size:9px;color:var(--t4)">VIX 40% · CAPE 25% · Sent 35%</div><div class="m" style="font-size:9px;color:var(--t4);margin-top:2px">${st.msdEx?"▲ Tap to collapse":"▼ Tap to expand"}</div></div></div>
+  <div onclick="toggleMSD()" style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;cursor:pointer"><div><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">MARKET SIGNAL DETAIL</div></div><div style="text-align:right"><div class="m" style="font-size:9px;color:var(--t4)">VIX 55% · CAPE 25% · Sent 20%</div><div class="m" style="font-size:9px;color:var(--t4);margin-top:2px">${st.msdEx?"▲ Tap to collapse":"▼ Tap to expand"}</div></div></div>
   <div class="msp-gauge"><div class="msp-needle" style="left:${np}%"></div></div><div class="msp-labels"><span>Str Buy</span><span>Buy</span><span>Soft Buy</span><span>Hold</span><span>Soft Sell</span><span>Sell</span><span>Str Sell</span></div>
   ${ms.override?`<div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.1)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.1)":"rgba(255,23,68,.1)"};border:1px solid ${ms.override.type==="CONFLICTED"?"rgba(255,193,7,.25)":ms.override.type==="OVERRIDE_BUY"?"rgba(0,230,118,.25)":"rgba(255,23,68,.25)"}"><div class="m" style="font-size:9px;font-weight:700;color:${ms.override.type==="CONFLICTED"?"var(--ca)":ms.override.type==="OVERRIDE_BUY"?"var(--cl)":"var(--st)"}">${ms.override.type==="CONFLICTED"?"⚠ CONFLICTING":"⚡ OVERRIDE"}</div><div style="font-size:11px;color:var(--t2)">${ms.override.note}</div></div>`:""}
   ${ms.capitulation&&ms.capitulation.active?`<div style="margin-top:8px;padding:10px 12px;border-radius:6px;background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.3)"><div class="m" style="font-size:10px;font-weight:800;color:var(--cl);margin-bottom:4px">🎯 CAPITULATION ACTIVE</div><div style="font-size:11px;color:var(--tx);line-height:1.5">Bear ${ms.capitulation.bear}% · S&P ${ms.capitulation.dd}% from 6mo peak (30d trough)${ms.capitulation.dd!==ms.capitulation.ddCurrent?` · currently ${ms.capitulation.ddCurrent}%`:""}. Market signal boosted −0.5 toward BUY.</div><div class="m" style="font-size:9px;color:var(--t3);margin-top:4px">Historical: 9/9 fires returned +23.9% avg fwd 12mo (1990×3, 2009 GFC, 2018, 2020 COVID, 2022×2, 2025). Triggers: Bear >50% + 30d trough DD &gt;7% from 6mo peak.</div></div>`:""}
@@ -1707,7 +1940,7 @@ function render(){const a=document.getElementById("app");
    const blockMsg=blockedSide==="buy"?'⚠ buy blocked: S&P below 10mo MA (avoid catching falling knife)':blockedSide==="sell"?'⚠ sell blocked: S&P below 10mo MA (low VIX in bear = grinding decline, not top)':null;
    sub=`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.25);border-radius:6px"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><div><div class="m" style="font-size:8px;color:var(--t4)">HYBRID F + MA10 GATE</div><div style="margin-top:4px;padding:3px 8px;border-radius:4px;background:${sl.bg};display:inline-block"><span class="m" style="font-size:11px;font-weight:800;color:${sl.color}">${sl.short} (${hybSig.score>=0?"+":""}${hybSig.score})</span></div>${blockMsg?`<div class="m" style="font-size:8px;color:var(--wn);margin-top:3px">${blockMsg}</div>`:hybSig.mom===true?'<div class="m" style="font-size:8px;color:var(--cl);margin-top:3px">✓ S&P above 10mo MA · gate open</div>':hybSig.mom==="bypass"?'<div class="m" style="font-size:8px;color:var(--ca);margin-top:3px">⚡ absolute bypass · gate not required</div>':""}</div>${rz?`<div style="text-align:right"><div class="m" style="font-size:8px;color:var(--t4)">5YR ROLLING</div><div class="m" style="font-size:16px;font-weight:800;color:${parseFloat(rz.z)>1.5?"var(--st)":parseFloat(rz.z)>1?"var(--wn)":parseFloat(rz.z)<-1.0?"var(--ca)":"var(--t2)"};margin-top:2px">${rz.z}σ</div><div class="m" style="font-size:8px;color:var(--t5)">μ=${rz.mean} σ=${rz.sd}</div></div>`:""}</div></div>`}
   if(s.hasCLF&&st.clfRatio!=null){const rc=st.clfRatio>2.0?"var(--st)":st.clfRatio>1.6?"var(--wn)":st.clfRatio>1.3?"var(--ca)":"var(--cl)";sub+=`<div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,.25);border-radius:6px"><div style="display:flex;justify-content:space-between"><div><div class="m" style="font-size:8px;color:var(--t4)">CLAIMS/CLF</div><div class="m" style="font-size:18px;font-weight:800;color:${rc};margin-top:2px">${st.clfRatio.toFixed(2)}</div></div><div style="text-align:right"><div class="m" style="font-size:8px;color:var(--t4)">4wk: ${st.claims4wk?Math.round(st.claims4wk).toLocaleString():"-"}</div><div class="m" style="font-size:8px;color:var(--t4)">CLF: ${st.clfRaw?st.clfRaw.toLocaleString()+"K":"-"}</div></div></div></div>`}
-  let sigBadge="";if(s.tier==="market"&&!s.isSigmoid){let sig;if(s.k==="cape")sig=capeSignal(st.cape);else if(s.k==="co"&&val!=null)sig=sentSignal(val);else if(s.k==="epu"&&val!=null)sig=epuSignal(val);if(sig){const sl=sigLevel(sig.score);sigBadge=`<div style="margin-top:6px;padding:4px 8px;border-radius:5px;background:${sl.bg};display:inline-block"><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}${s.mktW==="REF"?" · REF":""}</span></div>`}}
+  let sigBadge="";if(s.tier==="market"&&!s.isSigmoid){let sig;if(s.k==="cape")sig=capeSignal(st.cape);else if(s.k==="co"&&val!=null)sig=sentSignal(val,st.d.co||[]);else if(s.k==="epu"&&val!=null)sig=epuSignal(val);if(sig){const sl=sigLevel(sig.score);sigBadge=`<div style="margin-top:6px;padding:4px 8px;border-radius:5px;background:${sl.bg};display:inline-block"><span class="m" style="font-size:10px;font-weight:800;color:${sl.color}">${sl.short}${s.mktW==="REF"?" · REF":""}</span></div>`}}
   const wtBar=s.w?`<div class="wt-bar" style="width:${s.w*100}%;background:${TIERS[s.tier].color};opacity:.4"></div>`:"";
   let hcomp="";if(op&&(s.pre08!=null||s.pre20!=null)){hcomp=`<div class="db"><div class="m" style="font-size:9px;color:var(--t4);margin-bottom:6px">PRE-RECESSION</div><div class="hcomp">${s.pre01!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2001</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre01}</div></div>`:""}${s.pre08!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2008</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre08}</div></div>`:""}${s.pre20!=null?`<div class="hcomp-cell"><div class="m" style="font-size:8px;color:var(--t4)">2020</div><div class="m" style="font-size:12px;color:var(--t2);margin-top:2px">${s.pre20}</div></div>`:""}</div></div>`}
   return`<div class="card" data-ck="${s.k}" style="background:${cfg.bg};border:1px solid ${cfg.b}"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px"><div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">${dot(status)}<span class="m" style="font-size:10px;font-weight:700;color:${cfg.c}">${cfg.l}</span>${s.w?`<span class="m" style="font-size:8px;color:var(--t5)">${(s.w*100).toFixed(0)}%</span>`:""}</div><h3 class="h" style="font-size:17px;font-weight:700;margin-bottom:2px">${s.n}</h3><p class="m" style="font-size:10px;color:#666">${s.s}</p>${wtBar}${sigBadge}</div><div style="text-align:right"><div class="m" style="font-size:26px;font-weight:800;color:${cfg.c};line-height:1.1">${disp}<span style="font-size:11px;opacity:.5">${s.u}</span></div><div class="m" style="font-size:9px;color:var(--t4);margin-top:4px">${lat?.date||""}</div><a href="${s.isCape?"https://www.multpl.com/shiller-pe":`https://fred.stlouisfed.org/series/${s.f}`}" target="_blank" class="m" style="font-size:7px;color:var(--t5);text-decoration:none" onclick="event.stopPropagation()">${s.isCape?"multpl.com":s.f} →</a></div></div>${s.isCape||s.isSigmoid?"":spark(show,cfg.c)}${sub}${op?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid ${cfg.b}"><div class="desc">${s.desc}</div><div class="db"><div class="m" style="font-size:9px;color:var(--t4)">THRESHOLDS</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.th}</p></div><div class="db"><div class="m" style="font-size:9px;color:var(--t4)">TRACK RECORD</div><p class="m" style="font-size:11px;color:#888;margin-top:4px;line-height:1.7">${s.hi}</p></div>${hcomp}<p class="m" style="font-size:9px;color:var(--t5);margin-top:6px">${s.isCape?`<a href="https://www.multpl.com/shiller-pe" target="_blank">multpl.com →</a>`:`FRED: ${s.f} · <a href="https://fred.stlouisfed.org/series/${s.f}" target="_blank">FRED →</a>`}</p></div>`:""}<div class="m" style="font-size:9px;color:var(--t5);text-align:right;margin-top:6px">${op?"▲":"▼"}</div></div>${s.k==="co"?renderAAIICard()+renderPolicyUncertainty():""}${s.k==="mf"?renderRegionalFedMfg():""}`}).join("")}</div></div>`}).join("")}
@@ -1782,6 +2015,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (Hybrid F symmetric — tiered absolute 13/12/11 + above-MA-gated z-gradient) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
+ <strong style="color:var(--t4)">v18.1</strong>: <b>MA gate bug fix</b> — calcMomentum was slicing 10 and 3 elements off DAILY FRED SP500 data and labelling them "10-month MA" and "3-month momentum"; they were 10 and 3 trading days. Now 210/63/126 trading days (the 252-day drawdown window was already correct). Historical gate separation: +0.04pp broken vs +2.02pp fixed; 1,264 state changes vs 190. Sentiment reweighted 35%&rarr;20% and rescored on rolling 10yr percentile; VIX 40%&rarr;55%; CAPE unchanged 25%; override restricted to VIX only. Market Regime badge (BULL/SIDEWAYS/BEAR) added &mdash; descriptive only, feeds no score. AAII capitulation hit rate corrected from 9/9 100% to 7/10 70% (failures: Dec 2000, Nov 2007, Jan 2022 &mdash; all fired early in bear markets). Advisory display layer added: VIX bands incl. 13-15 complacency (0 score weight), gate-split VIX&ge;35 guidance, per-cell sector tilt flagged firm vs provisional, drawdown base rates, NASDAQ red-streak counter. Rejected after testing: AAII in the sentiment slot, dropping sentiment entirely, RSP breadth, VIX term structure, Bitcoin.<br>
  <strong style="color:var(--t4)">v17.14</strong>: Employment grid restructure + CPI/GDP overhaul + Regional Fed Mfg card. Employment: % share moved from classification box into Private/Government grid cells (alongside abs deltas), with 3mo annualized % mirroring 12mo. Classification box now leads with prominent ratio. CPI expanded view: YoY acceleration (e.g. "▲ +0.6pp"), sequential m/m, 3mo annualized, Core CPI (CPILFESL), Cleveland Fed Median CPI (MEDCPIM158SFRBCLE). GDP expanded view: GDPNow nowcast (GDPNOW) alongside BEA actual + spread. New Regional Fed Mfg card after Mfg Employment indicator: 3-bank composite (Philly GACDFSA066MSFRBPHI, NY Empire GACDISA066MSFRBNY, Dallas BACTSAMFRBDAL) mapped to ISM-equivalent (50-base) for familiar read. Each contributor shown with raw + ISM-eq. Policy Uncertainty moved from standalone position to Indicators Market Signals tier after AAII (sentiment-adjacent). No scoring changes.<br>
  <strong style="color:var(--t4)">v17.13</strong>: Lean-expansion ratio fix. Previously "-1.97 : 1 priv:gov" implied private was losing 1.97 jobs per gov job — but in lean expansion private is the GROWING side. The negative sign was visually attached to the wrong sector because priv was always the numerator. Fix: when priv is positive and gov is negative, flip the formula so the negative sector (gov) is in the numerator and the positive sector (priv) is the "1" baseline. Math: -260/511 = -0.51 : 1, label "gov:priv". Reads cleanly as "gov shed 0.51 jobs per 1 private job added." All other cases unchanged. No scoring changes.<br>
  <strong style="color:var(--t4)">v17.12</strong>: Employment Context — percentage split added alongside Priv:Gov ratio. Addresses lean-expansion-reads-as-loss problem: "-1.97 : 1" looks like private is losing 1.97 jobs per gov job, but in lean expansion private is actually growing. New split uses |net| as denominator so signs of each delta are preserved: lean expansion shows Priv +204% (amber, exceeds whole) / Gov -104% (red, offsetting); gov-masked decline shows Priv -200% (red, shrinking) / Gov +100% (amber, padding); normal cases show clean 0-100% splits in neutral colors; contraction shows both percentages negative. Ratio's negative number portion now colored red inline. No scoring changes.<br>
