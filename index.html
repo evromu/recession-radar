@@ -117,6 +117,7 @@ async function poolMap(items,n,fn){
      - RSP/SPY breadth as a second gate: no edge gate-open, INVERTED gate-closed.
      - VIX/VIX3M term structure: non-monotonic, redundant with absolute VIX tiers.
      - Bitcoin: coincident with QQQ (corr +0.38), zero lead at every lag tested.
+   v18.3: live + backtest share one scoring kernel (no formula fork).
    v18.1 ADVISORY LAYER (display only — touches NO scoring):
      - VIX bands incl. 13-15 "complacency" advisory that contributes 0 to score.
      - VIX>=35 guidance split on the MA10 gate (buy tech vs hold cash).
@@ -253,6 +254,59 @@ function sentSignal(v,arr){
  if(pc<95)return{score:2,note:`${lbl} — Euphoric`,pct:pc};
  return{score:3,note:`${lbl} — Mania`,pct:pc};
 }
+
+/* ═══ v18.3 SHARED SCORING KERNEL ═══
+   Live dashboard (calcComposite / calcMarketSignal) and the in-dashboard
+   backtest (loadBacktest) MUST call these. Do not re-implement weights,
+   Hybrid F, ECY, bear damp, or VIX-only override in the backtest loop.
+   Frequency adapters (60 daily obs vs 3 monthly points for credit velocity;
+   210 trading days vs 10 monthly closes for the MA) stay at the call site. */
+function scoreYC(v,postInv){if(v==null||isNaN(v))return null;let s=clamp((0.5-v)/0.8*100);if(postInv)s=Math.min(100,s+15);return s}
+function scoreCredit(v,velocity){if(v==null||isNaN(v))return{score:null,raw:null,velBonus:false,velocity:null};const raw=clamp((v-3)/7*100);const velBonus=velocity!=null&&velocity>1.50;return{score:velBonus?Math.min(100,raw+15):raw,raw,velBonus,velocity}}
+function scoreClaims(ratio){if(ratio==null||isNaN(ratio))return null;return clamp((ratio-0.8)/2.5*100)}
+function scoreSahm(v){if(v==null||isNaN(v))return null;return clamp(v/0.6*100)}
+function scoreMfgDelta(delta){if(delta==null||isNaN(delta))return null;return clamp((50-delta)/150*100)}
+function creditVelocityFromObs(obs,lookback){if(!obs||obs.length<=lookback)return null;const recent=parseFloat(obs[obs.length-1].value),older=parseFloat(obs[Math.max(0,obs.length-lookback)].value);if(isNaN(recent)||isNaN(older))return null;return recent-older}
+function combineRecession({yc,cr,crRaw,ic,sa,mf}){
+ const lead=[];if(yc!=null)lead.push({w:.45,s:yc});if(cr!=null)lead.push({w:.35,s:cr});if(ic!=null)lead.push({w:.20,s:ic});
+ const lT=lead.reduce((a,b)=>a+b.w,0);let avgL=lT>0?lead.reduce((a,b)=>a+b.w*b.s,0)/lT:null;
+ let intB=false;if(yc!=null&&crRaw!=null&&yc>50&&crRaw>50){intB=true;if(avgL!=null)avgL=Math.min(100,avgL+10)}
+ const conf=[];if(sa!=null)conf.push({w:.60,s:sa});if(mf!=null)conf.push({w:.40,s:mf});
+ const cT=conf.reduce((a,b)=>a+b.w,0);const avgC=cT>0?conf.reduce((a,b)=>a+b.w*b.s,0)/cT:null;
+ let rec=null;if(avgL!=null&&avgC!=null)rec=avgL*.75+avgC*.25;else if(avgL!=null)rec=avgL;
+ return{recession:rec,leading:avgL,confirming:avgC,interactionBonus:intB}}
+function ecyModifier({cape,dfii10,cpiYoY,cpiAccelPp,dgs10Chg6}){
+ if(cape==null||dfii10==null||isNaN(cape)||isNaN(dfii10))return{modifier:0,ecy:null,gateBlocked:null};
+ const ecy=(1/cape*100)-dfii10;
+ if(ecy<3)return{modifier:0,ecy,gateBlocked:"ECY below 3%"};
+ if(cpiYoY!=null&&cpiYoY>4.0)return{modifier:0,ecy,gateBlocked:`CPI ${cpiYoY.toFixed(1)}% > 4%`};
+ if(cpiAccelPp!=null&&cpiAccelPp>1.0)return{modifier:0,ecy,gateBlocked:`CPI accel ${cpiAccelPp.toFixed(1)}pp > 1pp`};
+ if(dgs10Chg6!=null&&dgs10Chg6>0.75)return{modifier:0,ecy,gateBlocked:`10Y +${dgs10Chg6.toFixed(2)}% > 0.75%`};
+ return{modifier:-1,ecy,gateBlocked:null}}
+function applyCapeECY(cS_raw,ecyMod){const cS={...cS_raw};if(ecyMod&&ecyMod.modifier){cS.score=Math.max(-3,Math.min(3,cS_raw.score+ecyMod.modifier));if(ecyMod.ecy!=null)cS.note+=` [ECY ${ecyMod.ecy.toFixed(1)}% → softened]`}return cS}
+function applyBearSentiment(sS,bearRegime,drawdown){
+ if(!sS)return{signal:{score:0,note:""},damp:null};
+ if(bearRegime&&sS.score<0){const origScore=sS.score,dampedScore=Math.round(sS.score*0.5);
+  return{signal:{...sS,score:dampedScore,note:sS.note+` [dampened: bear regime ${drawdown}%]`},damp:{orig:origScore,damped:dampedScore,drawdown}}}
+ return{signal:sS,damp:null}}
+function combineMarketSignal({vS,cS,sS,bearRegime,bearDamp,recScore,capit,fgCap,fgGreed}){
+ const w=[];
+ if(vS&&vS.note)w.push({sig:vS,w:.55,name:"VIX",canOvr:true});
+ if(cS&&cS.note)w.push({sig:cS,w:.25,name:"CAPE",canOvr:false});
+ if(sS&&sS.note)w.push({sig:sS,w:.20,name:"Sentiment",canOvr:false});
+ const tW=w.reduce((a,b)=>a+b.w,0);let bs=tW>0?w.reduce((a,b)=>a+b.w*b.sig.score,0)/tW:0;
+ if(bearRegime)bs+=0.3;
+ const ovrScale=Math.max(0,1-(recScore||0)/80);
+ let ov=null;const ext=w.filter(x=>Math.abs(x.sig.score)===3&&x.canOvr);
+ if(ext.length){const sb=ext.filter(x=>x.sig.score===-3),ss=ext.filter(x=>x.sig.score===3);
+  const buyFloor=-2.5*ovrScale,sellFloor=2.5*ovrScale;
+  if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX extremes conflict."};
+  else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+` capitulation (${(ovrScale*100).toFixed(0)}% strength, rec ${(recScore||0).toFixed(0)})`};bs=Math.min(bs,buyFloor)}
+  else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+` extreme (${(ovrScale*100).toFixed(0)}% strength)`};bs=Math.max(bs,sellFloor)}}
+ if(capit&&capit.active)bs=Math.max(-3,bs-0.5);
+ if(fgCap&&fgCap.active)bs=Math.max(-3,bs-0.2);
+ if(fgGreed&&fgGreed.active)bs=Math.min(3,bs+0.2);
+ return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:!!bearRegime,bearDamp:bearDamp||null,capitulation:capit||{active:false},fgCap:fgCap||{active:false},fgGreed:fgGreed||{active:false}}}
 function epuSignal(v){if(v==null)return{score:0,note:""};const z=((v-110)/50).toFixed(1);if(v>300)return{score:3,note:`EPU ${v.toFixed(0)} (${z}σ) — Crisis`};if(v>200)return{score:2,note:`EPU ${v.toFixed(0)} (${z}σ) — Major`};if(v>150)return{score:1,note:`EPU ${v.toFixed(0)} (${z}σ) — Elevated`};return{score:0,note:`EPU ${v.toFixed(0)} (${z}σ) — Normal`}}
 
 function calcMomentum(){
@@ -378,19 +432,11 @@ function calcRedStreak(){
 function calcECYModifier(){
  const cape=st.cape;const dfii10Obs=st.d.dfii10||[];const dfii10=dfii10Obs.length?parseFloat(dfii10Obs[dfii10Obs.length-1].value):null;
  const cpiData=st.mcFull.cpi||[];const dgs10Data=st.mcFull.y10||[];
- if(cape==null||dfii10==null)return{modifier:0,ecy:null,gateBlocked:null};
- const ecy=(1/cape*100)-dfii10;
- if(ecy<3)return{modifier:0,ecy,gateBlocked:'ECY below 3%'};
- /* Gate 1: CPI YoY > 4% */
- if(cpiData.length>=13){const cNow=parseFloat(cpiData[cpiData.length-1].value),c12=parseFloat(cpiData[cpiData.length-13]?.value);
-  if(cNow&&c12){const cpiYoY=((cNow-c12)/c12)*100;if(cpiYoY>4.0)return{modifier:0,ecy,gateBlocked:`CPI ${cpiYoY.toFixed(1)}% > 4%`}}}
- /* Gate 2: CPI acceleration > 1pp in 6mo */
- if(cpiData.length>=19){const cNow=parseFloat(cpiData[cpiData.length-1].value),c12=parseFloat(cpiData[cpiData.length-13]?.value),c6=parseFloat(cpiData[cpiData.length-7].value),c18=parseFloat(cpiData[cpiData.length-19]?.value);
-  if(cNow&&c12&&c6&&c18){const cpiNow=((cNow-c12)/c12)*100,cpi6=((c6-c18)/c18)*100;if((cpiNow-cpi6)>1.0)return{modifier:0,ecy,gateBlocked:`CPI accel ${(cpiNow-cpi6).toFixed(1)}pp > 1pp`}}}
- /* Gate 3: Nominal 10Y rising > 0.75% in 6mo */
- if(dgs10Data.length>=7){const rNow=parseFloat(dgs10Data[dgs10Data.length-1].value),r6=parseFloat(dgs10Data[dgs10Data.length-7]?.value);
-  if(rNow&&r6){const rateChg=rNow-r6;if(rateChg>0.75)return{modifier:0,ecy,gateBlocked:`10Y +${rateChg.toFixed(2)}% > 0.75%`}}}
- return{modifier:-1,ecy,gateBlocked:null}}
+ let cpiYoY=null,cpiAccelPp=null,dgs10Chg6=null;
+ if(cpiData.length>=13){const cNow=parseFloat(cpiData[cpiData.length-1].value),c12=parseFloat(cpiData[cpiData.length-13]?.value);if(cNow&&c12)cpiYoY=((cNow-c12)/c12)*100}
+ if(cpiData.length>=19){const cNow=parseFloat(cpiData[cpiData.length-1].value),c12=parseFloat(cpiData[cpiData.length-13]?.value),c6=parseFloat(cpiData[cpiData.length-7].value),c18=parseFloat(cpiData[cpiData.length-19]?.value);if(cNow&&c12&&c6&&c18)cpiAccelPp=((cNow-c12)/c12)*100-((c6-c18)/c18)*100}
+ if(dgs10Data.length>=7){const rNow=parseFloat(dgs10Data[dgs10Data.length-1].value),r6=parseFloat(dgs10Data[dgs10Data.length-7]?.value);if(rNow&&r6)dgs10Chg6=rNow-r6}
+ return ecyModifier({cape,dfii10,cpiYoY,cpiAccelPp,dgs10Chg6})}
 
 function calcCapitulation(){
  /* AAII Bear% > 50 AND S&P drawdown >7% from 6mo peak, using the MINIMUM close
@@ -1078,53 +1124,11 @@ function calcMarketSignal(preComp){const vD=st.d.vx||[],coD=st.d.co||[];
  const vZ=st.vixRolling?parseFloat(st.vixRolling.z):null;
  const mom=calcMomentum();st.momentum=mom;
  const vS=vixSignalHybrid(vix,vZ,mom.abvMA);
- const cS_raw=capeSignal(st.cape);const ecyMod=calcECYModifier();st.ecyData=ecyMod;
- const cS={...cS_raw};if(ecyMod.modifier!==0){cS.score=Math.max(-3,Math.min(3,cS_raw.score+ecyMod.modifier));cS.note+=` [ECY ${ecyMod.ecy.toFixed(1)}% → softened]`}
- /* Bear regime: dampen sentiment's contrarian buy signal.
-    In 2022 Sent=50-67 pulled BUY (-1 to -3) while market fell 25%.
-    Consumer pessimism during confirmed downtrend isn't contrarian — it's correct.
-    Dampen: halve sentiment's buy score (negative values) in bear regime. */
- let sS=sentSignal(sent,coD);
- let bearDamp=null;
- if(mom.bearRegime&&sS.score<0){
-  const origScore=sS.score;
-  const dampedScore=Math.round(sS.score*0.5);
-  bearDamp={orig:origScore,damped:dampedScore,drawdown:mom.drawdown};
-  sS={...sS,score:dampedScore,note:sS.note+` [dampened: bear regime ${mom.drawdown}%]`}}
- const w=[];
- /* v18 weights: VIX 55 / CAPE 25 / Sentiment 20. Override restricted to VIX.
-    Sentiment override was forcing STRONG BUY off a 2-month-stale UMCSENT print
-    even with CAPE at 40+ (e.g. Jul 2026: raw composite -0.30 HOLD -> -2.50 BUY). */
- if(vS.note)w.push({sig:vS,w:.55,name:"VIX",canOvr:true});
- if(cS.note)w.push({sig:cS,w:.25,name:"CAPE",canOvr:false});
- if(sS.note)w.push({sig:sS,w:.20,name:"Sentiment",canOvr:false});
- const tW=w.reduce((a,b)=>a+b.w,0);let bs=tW>0?w.reduce((a,b)=>a+b.w*b.sig.score,0)/tW:0;
- /* Bear regime tilt: add +0.3 (toward sell) when in confirmed downtrend.
-    This is small enough not to overpower capitulation buys (VIX>40 = -2 or -3)
-    but shifts HOLD → SOFT SELL in grinding bears like 2022. */
- if(mom.bearRegime)bs+=0.3;
- /* Proportional override: scale by recession health. Full at GREEN (0), zero at ORANGE/RED (80+) */
+ const ecyMod=calcECYModifier();st.ecyData=ecyMod;
+ const cS=applyCapeECY(capeSignal(st.cape),ecyMod);
+ const sentAdj=applyBearSentiment(sentSignal(sent,coD),mom.bearRegime,mom.drawdown);
  const recScore=(preComp||calcComposite()).recession||0;
- const ovrScale=Math.max(0,1-recScore/80);
- let ov=null;const ext=w.filter(x=>Math.abs(x.sig.score)===3&&x.canOvr);
- if(ext.length){const sb=ext.filter(x=>x.sig.score===-3),ss=ext.filter(x=>x.sig.score===3);
-  const buyFloor=-2.5*ovrScale,sellFloor=2.5*ovrScale;
-  if(sb.length&&ss.length)ov={type:"CONFLICTED",note:"VIX extremes conflict."};
-  else if(sb.length&&bs<=0){ov={type:"OVERRIDE_BUY",note:sb.map(x=>x.name).join("+")+` capitulation (${(ovrScale*100).toFixed(0)}% strength, rec ${recScore.toFixed(0)})`};bs=Math.min(bs,buyFloor)}
-  else if(ss.length&&bs>=0){ov={type:"OVERRIDE_SELL",note:ss.map(x=>x.name).join("+")+` extreme (${(ovrScale*100).toFixed(0)}% strength)`};bs=Math.max(bs,sellFloor)}}
- /* AAII Capitulation bonus: additive -0.5 when Bear>50 + DD>7% from 6mo peak */
- const capit=calcCapitulation();
- if(capit.active)bs=Math.max(-3,bs-0.5);
- /* F&G Capitulation bonus (v17.7): additive -0.2 when F&G<20 + EF streak>=10 days.
-    Stacks with AAII Cap when both fire. Backtest: 144 unique catches AAII missed,
-    +6.51% fwd 6mo (p=0.011). When both fire: +33.96% fwd 6mo (strongest signal). */
- const fgCap=calcFGCapitulation();
- if(fgCap.active)bs=Math.max(-3,bs-0.2);
- /* F&G Greed Warning (v17.7): additive +0.2 when F&G>85 + EG streak>=5 days.
-    Backtest: -1.82% fwd 3mo vs baseline +2.57% (lift -4.4pp, p=0.020). */
- const fgGreed=calcFGGreedWarning();
- if(fgGreed.active)bs=Math.min(3,bs+0.2);
- return{score:bs,level:sigLevel(bs),override:ov,signals:{vix:vS,cape:cS,sentiment:sS},bearRegime:mom.bearRegime,bearDamp,capitulation:capit,fgCap,fgGreed}}
+ return combineMarketSignal({vS,cS,sS:sentAdj.signal,bearRegime:mom.bearRegime,bearDamp:sentAdj.damp,recScore,capit:calcCapitulation(),fgCap:calcFGCapitulation(),fgGreed:calcFGGreedWarning()})}
 
 function getStrategy(preComp,preMs){const comp=preComp||calcComposite();const ms=preMs||calcMarketSignal(comp);const r=comp.recession!=null?comp.recession:0;const m=ms.score;
  /* v16.1: thresholds 35/60/80. RED (>80) differentiated from ORANGE (60-80).
@@ -1409,23 +1413,20 @@ function peakPct(d){if(!d||d.length<10)return null;const v=d.map(x=>parseFloat(x
 function checkPostInversion(){const ad=st.al;if(!ad.ycUD||!ad.ycInv)return false;const mo=Math.round((new Date()-new Date(ad.ycUD+"T00:00:00"))/(1000*60*60*24*30.44));return mo>=0&&mo<12}
 
 /* v15.1: YC scoring range 0.5 to -0.3 (0.8 total) */
-function calcComposite(){const ycObs=st.d.yc||[];const ycLat=ycObs.length?parseFloat(ycObs[ycObs.length-1].value):null;let ycScore=ycLat!=null?clamp((0.5-ycLat)/0.8*100):null;st.postInvBonus=checkPostInversion();if(st.postInvBonus&&ycScore!=null)ycScore=Math.min(100,ycScore+15);
- const crObs=st.d.cr||[];const crLat=crObs.length?parseFloat(crObs[crObs.length-1].value):null;const crScore=crLat!=null?clamp((crLat-3)/7*100):null;
- /* Credit spread velocity bonus: +15 when widening >150bps in ~3mo */
- let crVelocityBonus=false,crVelocity=null;
- if(crObs.length>=60){const recent=parseFloat(crObs[crObs.length-1].value),older=parseFloat(crObs[Math.max(0,crObs.length-60)].value);
-  if(!isNaN(recent)&&!isNaN(older)){crVelocity=recent-older;if(crVelocity>1.50)crVelocityBonus=true}}
- const crScoreFinal=crVelocityBonus&&crScore!=null?Math.min(100,crScore+15):crScore;
- st.crVelocity={velocity:crVelocity,bonus:crVelocityBonus};
- let icScore=null;if(st.clfRatio!=null)icScore=clamp((st.clfRatio-0.8)/2.5*100);
- const lead=[];if(ycScore!=null)lead.push({w:.45,s:ycScore});if(crScoreFinal!=null)lead.push({w:.35,s:crScoreFinal});if(icScore!=null)lead.push({w:.20,s:icScore});
- const lT=lead.reduce((a,b)=>a+b.w,0);let avgL=lT>0?lead.reduce((a,b)=>a+b.w*b.s,0)/lT:null;
- let intB=false;if(ycScore!=null&&crScore!=null&&ycScore>50&&crScore>50){intB=true;if(avgL!=null)avgL=Math.min(100,avgL+10)}
- const saObs=st.d.sa||[];const saLat=saObs.length?parseFloat(saObs[saObs.length-1].value):null;const saScore=saLat!=null?clamp(saLat/0.6*100):null;
- let mfScore=null;const mfObs=st.d.mf||[];const mfV=mfObs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));if(mfV.length>=2)mfScore=clamp((50-(mfV[mfV.length-1]-mfV[0]))/150*100);
- const conf=[];if(saScore!=null)conf.push({w:.60,s:saScore});if(mfScore!=null)conf.push({w:.40,s:mfScore});const cT=conf.reduce((a,b)=>a+b.w,0);const avgC=cT>0?conf.reduce((a,b)=>a+b.w*b.s,0)/cT:null;
- let rec=null;if(avgL!=null&&avgC!=null)rec=avgL*.75+avgC*.25;else if(avgL!=null)rec=avgL;
- return{recession:rec,leading:avgL,confirming:avgC,postInvBonus:st.postInvBonus,interactionBonus:intB}}
+function calcComposite(){
+ const ycObs=st.d.yc||[];const ycLat=ycObs.length?parseFloat(ycObs[ycObs.length-1].value):null;
+ st.postInvBonus=checkPostInversion();
+ const ycScore=scoreYC(ycLat,st.postInvBonus);
+ const crObs=st.d.cr||[];const crLat=crObs.length?parseFloat(crObs[crObs.length-1].value):null;
+ const cr=scoreCredit(crLat,creditVelocityFromObs(crObs,60));
+ st.crVelocity={velocity:cr.velocity,bonus:cr.velBonus};
+ const icScore=st.clfRatio!=null?scoreClaims(st.clfRatio):null;
+ const saObs=st.d.sa||[];const saLat=saObs.length?parseFloat(saObs[saObs.length-1].value):null;
+ const saScore=scoreSahm(saLat);
+ const mfObs=st.d.mf||[];const mfV=mfObs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));
+ const mfScore=mfV.length>=2?scoreMfgDelta(mfV[mfV.length-1]-mfV[0]):null;
+ const out=combineRecession({yc:ycScore,cr:cr.score,crRaw:cr.raw,ic:icScore,sa:saScore,mf:mfScore});
+ return{...out,postInvBonus:st.postInvBonus}}
 
 async function loadAll(){
  st.ld=true;st.err=null;st.fetchN=0;st.fetchMsg="Connecting to data sources…";render();
@@ -1494,75 +1495,40 @@ async function loadBacktest(){st.bt.loading=true;st.bt.err=null;render();
   let ycWI=false,ycUM=null;const comp=[];
   for(let mi=0;mi<months.length;mi++){const m=months[mi];const indS={};const ycV=idx.yc[m];if(ycV!=null&&!isNaN(ycV)){if(ycV<0)ycWI=true;else if(ycWI&&!ycUM)ycUM=m}
    let postInv=false;if(ycUM){const um=new Date(ycUM+"-01"),cm=new Date(m+"-01");const diff=(cm-um)/(1000*60*60*24*30.44);if(diff>=0&&diff<12)postInv=true;if(diff>=12){ycWI=false;ycUM=null}}
-   const lead=[];if(ycV!=null&&!isNaN(ycV)){let s=clamp((0.5-ycV)/0.8*100);if(postInv)s=Math.min(100,s+15);lead.push({w:.45,s});indS.yc=s}
-   if(idx.cr[m]!=null&&!isNaN(idx.cr[m])){const s=clamp((idx.cr[m]-3)/7*100);
-    let crVelBonus=false;const crMos=months.slice(Math.max(0,mi-3),mi+1).filter(x=>idx.cr[x]!=null);
-    if(crMos.length>=4){const crNow=idx.cr[crMos[crMos.length-1]],cr3ago=idx.cr[crMos[0]];if(crNow-cr3ago>1.50)crVelBonus=true}
-    const sFinal=crVelBonus?Math.min(100,s+15):s;lead.push({w:.35,s:sFinal});indS.cr=sFinal;indS.crRaw=s}
-   if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){const s=clamp((idx.ic[m]/idx.clf[m]-0.8)/2.5*100);lead.push({w:.20,s});indS.ic=s}
-   const lT=lead.reduce((a,b)=>a+b.w,0);let aL=lT>0?lead.reduce((a,b)=>a+b.w*b.s,0)/lT:null;
-   if(indS.yc!=null&&indS.crRaw!=null&&indS.yc>50&&indS.crRaw>50&&aL!=null)aL=Math.min(100,aL+10);
-   const conf=[];if(idx.sa[m]!=null&&!isNaN(idx.sa[m])){const s=clamp(idx.sa[m]/0.6*100);conf.push({w:.60,s});indS.sa=s}
-   const mfK=months.slice(Math.max(0,mi-3),mi+1);if(mfK.length>=4){const v0=idx.mf[mfK[0]],v3=idx.mf[mfK[3]];if(v0!=null&&v3!=null){const s=clamp((50-(v3-v0))/150*100);conf.push({w:.40,s});indS.mf=s}}
-   const cT=conf.reduce((a,b)=>a+b.w,0);const aC=cT>0?conf.reduce((a,b)=>a+b.w*b.s,0)/cT:null;
-   /* Market signal scoring */
-   let vxSig=0;
-   if(idx.vx[m]!=null){const v=idx.vx[m],z=vixZbt[m];
-    const abvMA=idx.spx[m]!=null&&spxMA[m]!=null&&idx.spx[m]>spxMA[m];
-    if(v>50)vxSig=-3;else if(v>40)vxSig=-2;else if(v>35)vxSig=-1;else if(v<12)vxSig=3;
-    else if(z!=null&&z>1.0){vxSig=abvMA?(z>2?-2:-1):0}
-    else if(z!=null){if(z>-0.5)vxSig=0;else if(z>-1)vxSig=1;else if(z>-1.5)vxSig=2;else vxSig=3}
-    indS.vx=50+vxSig*16.67}
-   let capeSig=0;
-   if(cI[m]!=null){const cv=cI[m];if(cv<12)capeSig=-3;else if(cv<15)capeSig=-2;else if(cv<20)capeSig=-1;else if(cv<25)capeSig=0;else if(cv<30)capeSig=1;else if(cv<35)capeSig=2;else capeSig=3;indS.cape=cv<25?0:cv<30?clamp((cv-25)/5*33):cv<35?clamp(33+(cv-30)/5*34):100}
-   /* ECY modifier in backtest */
-   if(cI[m]!=null&&idx.dfii10[m]!=null){const btECY=(1/cI[m]*100)-idx.dfii10[m];let ecySoften=btECY>=3;
-    if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.slice(Math.max(0,mi-12),mi+1);if(cpiMos.length>=13){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[0]];if(cN&&c12&&((cN-c12)/c12*100)>4.0)ecySoften=false}}
-    if(ecySoften&&idx.cpi[m]!=null){const cpiMos=months.slice(Math.max(0,mi-18),mi+1);if(cpiMos.length>=19){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[cpiMos.length-13]],c6=idx.cpi[cpiMos[cpiMos.length-7]],c18=idx.cpi[cpiMos[0]];if(cN&&c12&&c6&&c18){const cpiNow=(cN-c12)/c12*100,cpi6=(c6-c18)/c18*100;if((cpiNow-cpi6)>1.0)ecySoften=false}}}
-    if(ecySoften&&idx.dgs10[m]!=null){const dMos=months.slice(Math.max(0,mi-6),mi+1);if(dMos.length>=7){const rN=idx.dgs10[dMos[dMos.length-1]],r6=idx.dgs10[dMos[0]];if(rN&&r6&&(rN-r6)>0.75)ecySoften=false}}
-    if(ecySoften)capeSig=Math.max(-3,capeSig-1)}
-   /* v18: backtest sentiment must mirror the LIVE percentile logic, not the old
-      absolute thresholds — otherwise the in-dashboard backtest reports a model
-      that is no longer running. Rolling 120-month percentile, expanding until
-      120 months of history exist. */
-   let sentSig=0;
-   if(idx.co[m]!=null){
-    const sv=idx.co[m];
-    const hist=coMos.filter(x=>x<m).slice(-120).map(x=>idx.co[x]).filter(v=>v!=null);
-    if(hist.length>=12){
-     const pc=(hist.filter(x=>sv>x).length/hist.length)*100;
-     if(pc<5)sentSig=-3;else if(pc<15)sentSig=-2;else if(pc<30)sentSig=-1;
-     else if(pc<70)sentSig=0;else if(pc<85)sentSig=1;else if(pc<95)sentSig=2;else sentSig=3;
-    }
-    indS.co=clamp((95-sv)/45*100)}
-   /* Bear regime detection */
-   let btBear=false;
-   if(idx.spx[m]!=null&&spxMA[m]!=null){
-    const abvMA=idx.spx[m]>spxMA[m];
-    const prev12=spxMos.filter(x=>x<=m).slice(-12).map(x=>idx.spx[x]).filter(v=>v!=null);
-    const high12=prev12.length?Math.max(...prev12):idx.spx[m];
-    const dd=((idx.spx[m]-high12)/high12)*100;
-    btBear=!abvMA&&dd<-7}
-   /* Dampen sentiment contrarian buy in bear regime */
-   if(btBear&&sentSig<0)sentSig=Math.round(sentSig*0.5);
-   /* Composite market signal (-3 to +3) */
-   const mktW=[];
-   if(idx.vx[m]!=null)mktW.push({w:.40,s:vxSig});
-   if(cI[m]!=null)mktW.push({w:.25,s:capeSig});
-   if(idx.co[m]!=null)mktW.push({w:.35,s:sentSig});
-   const mWT=mktW.reduce((a,b)=>a+b.w,0);let mktScore=mWT>0?mktW.reduce((a,b)=>a+b.w*b.s,0)/mWT:null;
-   if(btBear&&mktScore!=null)mktScore+=0.3;
-   /* Compute recession score BEFORE override (needed for proportional scaling) */
-   let rec=null;if(aL!=null&&aC!=null)rec=aL*.75+aC*.25;else if(aL!=null)rec=aL;
-   const btRecScore=rec||0;const btOvrScale=Math.max(0,1-btRecScore/80);
-   /* Override logic — proportional to recession score */
-   if(mktScore!=null){const ext=mktW.filter(x=>Math.abs(x.s)===3);
-    const sb=ext.filter(x=>x.s===-3),ss=ext.filter(x=>x.s===3);
-    if(sb.length&&!ss.length&&mktScore<=0)mktScore=Math.min(mktScore,-2.5*btOvrScale);
-    if(ss.length&&!sb.length&&mktScore>=0)mktScore=Math.max(mktScore,2.5*btOvrScale)}
-   /* Market score 0-100 for chart */
-   const mktPct=mktScore!=null?clamp((mktScore+3)/6*100):null;
-   const mktP=[];if(indS.vx!=null)mktP.push({w:.40,s:indS.vx});if(indS.cape!=null)mktP.push({w:.25,s:indS.cape});if(indS.co!=null)mktP.push({w:.35,s:indS.co});
+   /* v18.3: same kernel as live calcComposite / calcMarketSignal */
+   const ycScore=scoreYC(ycV,postInv);if(ycScore!=null)indS.yc=ycScore;
+   let crPack={score:null,raw:null,velBonus:false,velocity:null};
+   if(idx.cr[m]!=null&&!isNaN(idx.cr[m])){
+    const crMos=months.slice(Math.max(0,mi-3),mi+1).filter(x=>idx.cr[x]!=null);
+    let vel=null;if(crMos.length>=4)vel=idx.cr[crMos[crMos.length-1]]-idx.cr[crMos[0]];
+    crPack=scoreCredit(idx.cr[m],vel);indS.cr=crPack.score;indS.crRaw=crPack.raw}
+   let icScore=null;if(idx.ic[m]!=null&&idx.clf[m]!=null&&idx.clf[m]>0){icScore=scoreClaims(idx.ic[m]/idx.clf[m]);indS.ic=icScore}
+   let saScore=null;if(idx.sa[m]!=null&&!isNaN(idx.sa[m])){saScore=scoreSahm(idx.sa[m]);indS.sa=saScore}
+   let mfScore=null;const mfHist=months.slice(0,mi+1).filter(x=>idx.mf[x]!=null).slice(-3);
+   if(mfHist.length>=2){mfScore=scoreMfgDelta(idx.mf[mfHist[mfHist.length-1]]-idx.mf[mfHist[0]]);indS.mf=mfScore}
+   const recOut=combineRecession({yc:ycScore,cr:crPack.score,crRaw:crPack.raw,ic:icScore,sa:saScore,mf:mfScore});
+   const aL=recOut.leading,aC=recOut.confirming,rec=recOut.recession;
+   let vS={score:0,note:"",mom:null};
+   if(idx.vx[m]!=null){const abvMA=idx.spx[m]!=null&&spxMA[m]!=null&&idx.spx[m]>spxMA[m];vS=vixSignalHybrid(idx.vx[m],vixZbt[m],abvMA);indS.vx=50+vS.score*16.67}
+   let cS={score:0,note:""};
+   if(cI[m]!=null){const cv=cI[m];cS=capeSignal(cv);indS.cape=cv<25?0:cv<30?clamp((cv-25)/5*33):cv<35?clamp(33+(cv-30)/5*34):100;
+    if(idx.dfii10[m]!=null){let cpiYoY=null,cpiAccelPp=null,dgs10Chg6=null;
+     const cpiMos=months.slice(Math.max(0,mi-12),mi+1);
+     if(cpiMos.length>=13){const cN=idx.cpi[cpiMos[cpiMos.length-1]],c12=idx.cpi[cpiMos[0]];if(cN&&c12)cpiYoY=(cN-c12)/c12*100}
+     const cpiMos2=months.slice(Math.max(0,mi-18),mi+1);
+     if(cpiMos2.length>=19){const cN=idx.cpi[cpiMos2[cpiMos2.length-1]],c12=idx.cpi[cpiMos2[cpiMos2.length-13]],c6=idx.cpi[cpiMos2[cpiMos2.length-7]],c18=idx.cpi[cpiMos2[0]];if(cN&&c12&&c6&&c18)cpiAccelPp=((cN-c12)/c12*100)-((c6-c18)/c18*100)}
+     const dMos=months.slice(Math.max(0,mi-6),mi+1);
+     if(dMos.length>=7){const rN=idx.dgs10[dMos[dMos.length-1]],r6=idx.dgs10[dMos[0]];if(rN&&r6)dgs10Chg6=rN-r6}
+     cS=applyCapeECY(cS,ecyModifier({cape:cv,dfii10:idx.dfii10[m],cpiYoY,cpiAccelPp,dgs10Chg6}))}}
+   let sS={score:0,note:""};
+   if(idx.co[m]!=null){const hist=coMos.filter(x=>x<=m).slice(-120).map(x=>({value:idx.co[x]})).filter(d=>d.value!=null&&!isNaN(d.value));sS=sentSignal(idx.co[m],hist);indS.co=clamp((95-idx.co[m])/45*100)}
+   let btBear=false,btDD=null;
+   if(idx.spx[m]!=null&&spxMA[m]!=null){const abvMA=idx.spx[m]>spxMA[m];const prev12=spxMos.filter(x=>x<=m).slice(-12).map(x=>idx.spx[x]).filter(v=>v!=null);const high12=prev12.length?Math.max(...prev12):idx.spx[m];btDD=((idx.spx[m]-high12)/high12)*100;btBear=!abvMA&&btDD<-7}
+   const sentAdj=applyBearSentiment(sS,btBear,btDD!=null?btDD.toFixed(1):null);sS=sentAdj.signal;
+   const hasMkt=!!(vS.note||cS.note||sS.note);
+   const ms=combineMarketSignal({vS:vS.note?vS:null,cS:cS.note?cS:null,sS:sS.note?sS:null,bearRegime:btBear,bearDamp:sentAdj.damp,recScore:rec||0,capit:null,fgCap:null,fgGreed:null});
+   const mktScore=hasMkt?ms.score:null;
+   const mktP=[];if(indS.vx!=null)mktP.push({w:.55,s:indS.vx});if(indS.cape!=null)mktP.push({w:.25,s:indS.cape});if(indS.co!=null)mktP.push({w:.20,s:indS.co});
    const mT=mktP.reduce((a,b)=>a+b.w,0);const aM=mT>0?mktP.reduce((a,b)=>a+b.w*b.s,0)/mT:null;
    comp.push({month:m,score:rec,leading:aL,confirming:aC,market:aM,mktSignal:mktScore,recession:idx.rec[m]===1,spx:idx.spx[m]||null,bearRegime:btBear,...indS})}
   const data=comp.filter(c=>c.score!=null);
@@ -1742,7 +1708,7 @@ function mAgo(d){if(!d)return null;return Math.round((new Date()-new Date(d+"T00
 function tgBtn(key,label,color){const on=st.bt.ov[key];return`<button class="tg ${on?"tg-on":"tg-off"}" style="${on?`background:${color};border-color:${color};color:#0E0D0B`:`border-color:#444;color:${color}`}" onclick="togOv('${key}')">${label}</button>`}
 
 function render(){const a=document.getElementById("app");
- if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v18.2 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
+ if(!st.key){a.innerHTML=`<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px"><div style="max-width:420px;width:100%;text-align:center"><h1 class="h" style="font-size:24px;font-weight:800;margin-bottom:4px">📡 RECESSION RADAR</h1><p class="m" style="font-size:9px;color:var(--t4);margin-bottom:32px">v18.3 · BACKTESTED</p><div style="background:rgba(20,19,16,.95);border:1px solid #2A2825;border-radius:14px;padding:28px 24px;text-align:left"><p style="font-size:12px;color:#888;line-height:1.7;margin-bottom:16px">Recession detection (F1 37) + Hybrid F symmetric VIX. ECY-adjusted CAPE. Credit velocity bonus. AAII + F&amp;G integrated with 7-indicator breakdown. Employment Context with federal/state+local split. EPU reference.</p><a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="m" style="font-size:11px;margin-bottom:20px;display:inline-block">Get free FRED API key →</a><div style="margin-bottom:16px"><label class="m" style="font-size:9px;color:var(--t4);display:block;margin-bottom:6px">FRED API KEY</label><input type="password" id="ki" class="si" placeholder="Paste FRED API key"></div><button id="lb" class="sb sd" disabled>LAUNCH DASHBOARD</button></div></div></div>`;setTimeout(()=>{const i=document.getElementById("ki"),b=document.getElementById("lb");if(!i||!b)return;i.addEventListener("input",()=>{const h=i.value.trim().length>10;b.disabled=!h;b.className=`sb ${h?"sa":"sd"}`});const go=()=>{const k=i.value.trim();if(k){st.key=k;localStorage.setItem("rr23",k);loadAll()}};b.addEventListener("click",go);i.addEventListener("keydown",e=>{if(e.key==="Enter")go()})},50);return}
  if(st.ld&&!S.some(s=>(st.d[s.k]||[]).length)){a.innerHTML=`<div class="c" style="text-align:center;padding-top:100px"><div style="font-size:32px" class="lp">📡</div><p class="m" style="font-size:13px;color:#666;margin-top:16px">${st.fetchMsg||"Fetching..."}</p><p class="m" style="font-size:10px;color:#444;margin-top:10px">Usually 10–20 seconds.</p></div>`;return}
  const comp=calcComposite();const ms=calcMarketSignal(comp);const strat=getStrategy(comp,ms);const mlv=ms.level;const np=((ms.score+3)/6)*100;const mom=st.momentum||{};
  /* v15.1 thresholds */
@@ -2040,6 +2006,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (Hybrid F symmetric — tiered absolute 13/12/11 + above-MA-gated z-gradient) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
+ <strong style="color:var(--t4)">v18.3</strong>: <b>Shared scoring kernel</b> — live dashboard and in-dashboard backtest now call the same functions (Hybrid F VIX, 55/25/20 weights, VIX-only override, ECY, bear damp, recession composite). The backtest had drifted to v17 weights (40/35) and the ungated VIX z-ladder. Scoring formulas unchanged; backtest now reports the model that is actually running. Original v18.2 file kept as recession-radar_V18_2_ORIGINAL.html.<br>
  <strong style="color:var(--t4)">v18.2</strong>: <b>Fetch fix</b> — GitHub Pages was stuck on "Fetching..." because corsproxy.io now requires a paid key (localhost-only free), allorigins/codetabs hang until timeout, and FRED itself has no CORS. Switched to Jina HTML proxy first, fail-fast (~4–12s per call instead of 45s), parallelized series loads, cached last-good snapshot in localStorage so the dashboard still opens if live fetch dies.<br>
  <strong style="color:var(--t4)">v18.1</strong>: <b>MA gate bug fix</b> — calcMomentum was slicing 10 and 3 elements off DAILY FRED SP500 data and labelling them "10-month MA" and "3-month momentum"; they were 10 and 3 trading days. Now 210/63/126 trading days (the 252-day drawdown window was already correct). Historical gate separation: +0.04pp broken vs +2.02pp fixed; 1,264 state changes vs 190. Sentiment reweighted 35%&rarr;20% and rescored on rolling 10yr percentile; VIX 40%&rarr;55%; CAPE unchanged 25%; override restricted to VIX only. Market Regime badge (BULL/SIDEWAYS/BEAR) added &mdash; descriptive only, feeds no score. AAII capitulation hit rate corrected from 9/9 100% to 7/10 70% (failures: Dec 2000, Nov 2007, Jan 2022 &mdash; all fired early in bear markets). Advisory display layer added: VIX bands incl. 13-15 complacency (0 score weight), gate-split VIX&ge;35 guidance, per-cell sector tilt flagged firm vs provisional, drawdown base rates, NASDAQ red-streak counter. Rejected after testing: AAII in the sentiment slot, dropping sentiment entirely, RSP breadth, VIX term structure, Bitcoin.<br>
  <strong style="color:var(--t4)">v17.14</strong>: Employment grid restructure + CPI/GDP overhaul + Regional Fed Mfg card. Employment: % share moved from classification box into Private/Government grid cells (alongside abs deltas), with 3mo annualized % mirroring 12mo. Classification box now leads with prominent ratio. CPI expanded view: YoY acceleration (e.g. "▲ +0.6pp"), sequential m/m, 3mo annualized, Core CPI (CPILFESL), Cleveland Fed Median CPI (MEDCPIM158SFRBCLE). GDP expanded view: GDPNow nowcast (GDPNOW) alongside BEA actual + spread. New Regional Fed Mfg card after Mfg Employment indicator: 3-bank composite (Philly GACDFSA066MSFRBPHI, NY Empire GACDISA066MSFRBNY, Dallas BACTSAMFRBDAL) mapped to ISM-equivalent (50-base) for familiar read. Each contributor shown with raw + ISM-eq. Policy Uncertainty moved from standalone position to Indicators Market Signals tier after AAII (sentiment-adjacent). No scoring changes.<br>
