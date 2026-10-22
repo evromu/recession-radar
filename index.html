@@ -1938,7 +1938,7 @@ function render(){const a=document.getElementById("app");
    <div style="padding:8px 10px;background:rgba(0,0,0,.2);border-radius:6px">
     <div style="font-size:10px;color:#888;line-height:1.6">${zone.note} CNN's composite of 7 market signals (VIX, momentum, junk bond demand, put/call, stock strength, breadth, safe-haven demand). Best used as contrarian: extreme fear often marks bottoms, extreme greed often marks tops.</div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-     <span class="m" style="font-size:8px;color:var(--t5)">Active signals: F&amp;G Cap (−0.2 buy) at score&lt;20 + 10d streak; F&amp;G Greed (+0.2 sell) at score&gt;85 + 5d streak.</span>
+     <span class="m" style="font-size:8px;color:var(--t5)">Active signals: F&amp;G Cap −0.2 when ≤25 on ≥15/20 days (−0.5 if VIX≥30); F&amp;G Greed = froth badge only (0 score). Old 10d streak dropped.</span>
      <a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" class="m" style="font-size:8px;color:var(--ca);text-decoration:none">cnn.com →</a>
     </div>
    </div>
