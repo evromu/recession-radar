@@ -118,6 +118,7 @@ async function poolMap(items,n,fn){
      - VIX/VIX3M term structure: non-monotonic, redundant with absolute VIX tiers.
      - Bitcoin: coincident with QQQ (corr +0.38), zero lead at every lag tested.
    v18.3: live + backtest share one scoring kernel (no formula fork).
+   v18.5: advisory-only VIX/VIX3M badge + expected-move gauge + scale-in note + QQQ deep-break caution (see emRender). VIX/VIX3M stays OUT of the score.
    v18.1 ADVISORY LAYER (display only — touches NO scoring):
      - VIX bands incl. 13-15 "complacency" advisory that contributes 0 to score.
      - VIX>=35 guidance split on the MA10 gate (buy tech vs hold cash).
@@ -530,6 +531,113 @@ function calcFGAdvisory(){
  const vals=(st.mcFull.sp500||[]).map(d=>parseFloat(d.value)).filter(x=>!isNaN(x));
  if(vals.length>=60){const hi=Math.max(...vals.slice(-126)),now=vals[vals.length-1],dd=(now-hi)/hi*100;out.fearDD={active:cur<=25&&dd<=-10,dd,cur}}
  return out}
+
+/* ═══════════════════ v18.5 ADVISORY: VIX TERM STRUCTURE + EXPECTED-MOVE GAUGE ═══════════════════
+   DISPLAY ONLY — zero weight in any score. Reference study: /rule16 (SPY 1993-2026, QQQ 1999-2026,
+   VIX/VIX3M from CBOE, log returns, VIX at START of each window).
+   Feed: Yahoo chart JSON (^VIX, ^VIX3M, SPY, QQQ) through the same pxGet proxy chain as the other cards;
+   FRED fallback (VIXCLS, VXVCLS, SP500, NASDAQ100 index levels) if Yahoo fails. If both fail the card
+   shows an "unavailable" note and nothing is hidden or scored. */
+const EM_TF=[{k:"daily",n:1,lab:"Daily · 1d"},{k:"weekly",n:5,lab:"Weekly · 5d"},{k:"monthly",n:21,lab:"Monthly · 21d"}];
+const EM_QQQ_MULT=1.2;
+/* SPY realized/implied (rms z) by VIX band at window start — accuracy.csv */
+const EM_RMS={daily:[.71,.78,.83,.89,.92,1.09],weekly:[.75,.76,.81,.77,.84,.93],monthly:[.80,.83,.79,.75,.74,.73]};
+function emBand(v){return v<15?0:v<20?1:v<25?2:v<30?3:v<40?4:5}
+const EM_BAND_LAB=["<15","15-20","20-25","25-30","30-40",">40"];
+function emSd(vix,n,mult){return vix/100*Math.sqrt(n/252)*(mult||1)}
+async function emYahoo(sym){
+ const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=6mo&interval=1d`;
+ const j=extractJson(await pxGet(url,12000));
+ const r=j&&j.chart&&j.chart.result&&j.chart.result[0];
+ if(!r||!r.timestamp||!r.indicators||!r.indicators.quote)throw new Error("yahoo "+sym);
+ const off=(r.meta&&r.meta.gmtoffset)||0,cl=r.indicators.quote[0].close||[],out=[];
+ r.timestamp.forEach((t,i)=>{const v=cl[i];if(typeof v==="number"&&isFinite(v)&&v>0)out.push({d:new Date((t+off)*1000).toISOString().slice(0,10),v})});
+ if(out.length<30)throw new Error("yahoo short "+sym);
+ return out}
+function emFromFred(obs){return(obs||[]).map(o=>({d:o.date,v:parseFloat(o.value)})).filter(x=>isFinite(x.v)&&x.v>0)}
+async function fetchExpectedMove(){
+ st.em=null;st.emErr=null;
+ try{
+  const [vix,v3,spy,qqq]=await Promise.all([emYahoo("^VIX"),emYahoo("^VIX3M"),emYahoo("SPY"),emYahoo("QQQ")]);
+  st.em=emCompute({vix,v3,spy,qqq,src:"Yahoo Finance · SPY / QQQ ETF closes"});
+  if(st.em)return;
+ }catch(e){st.emErr="Yahoo: "+(e.message||e)}
+ try{/* FRED fallback — index levels (same % moves as SPY/QQQ to within a few bp) */
+  const vix=emFromFred(st.d.vx),spy=emFromFred(st.mcFull.sp500);
+  const [v3o,ndo]=await Promise.all([ff("VXVCLS",st.key,60),ff("NASDAQ100",st.key,60)]);
+  st.em=emCompute({vix,v3:emFromFred(v3o),spy,qqq:emFromFred(ndo),src:"FRED fallback · S&P 500 / NASDAQ-100 index levels (not ETF prices)",idx:true});
+  if(st.em)st.emErr=null;
+ }catch(e){st.emErr=(st.emErr?st.emErr+" · ":"")+"FRED: "+(e.message||e)}
+}
+function emCompute(o){
+ const mk=a=>{const m=new Map();a.forEach(x=>m.set(x.d,x.v));return m};
+ const vm=mk(o.vix),v3m=mk(o.v3);
+ const align=a=>{const d=[],p=[],v=[];a.forEach(x=>{if(vm.has(x.d)){d.push(x.d);p.push(x.v);v.push(vm.get(x.d))}});return{d,p,v}};
+ const res={src:o.src,idx:!!o.idx,assets:{}};
+ for(const [name,arr,mult] of [["SPY",o.spy,1],["QQQ",o.qqq,EM_QQQ_MULT]]){
+  const a=align(arr),L=a.p.length-1;if(L<22)return null;
+  const vixNow=a.v[L],last=a.p[L],rows=[];
+  for(const tf of EM_TF){
+   const sd=emSd(vixNow,tf.n,mult),sd0=emSd(a.v[L-tf.n],tf.n,mult);
+   const mv=Math.log(last/a.p[L-tf.n]),z=mv/sd0;
+   const px=k=>[last*Math.exp(-k*sd),last*Math.exp(k*sd)];
+   rows.push({tf,sd,sd0,mv,z,r1:px(1),r2:px(2),typ:name==="SPY"?EM_RMS[tf.k][emBand(vixNow)]:null,startVix:a.v[L-tf.n],startDate:a.d[L-tf.n]})}
+  res.assets[name]={last,asOf:a.d[L],vixNow,rows,prevDate:a.d[L-1]}}
+ const vd=[...vm.keys()].filter(d=>v3m.has(d)).sort(),n=vd.length;
+ if(n>=2){const d1=vd[n-1],d0=vd[n-2];res.ts={date:d1,vix:vm.get(d1),v3:v3m.get(d1),ratio:vm.get(d1)/v3m.get(d1),prevRatio:vm.get(d0)/v3m.get(d0),prevDate:d0}}
+ res.asOf=res.assets.SPY.asOf;
+ return res}
+/* returns advisory flags derived from st.em — all display only */
+function emFlags(em){
+ if(!em)return null;
+ const f={inv:null,combo:{},stage:{},qqqCaution:null};
+ if(em.ts)f.inv={ratio:em.ts.ratio,inverted:em.ts.ratio>1,prevInverted:em.ts.prevRatio>1,prevRatio:em.ts.prevRatio};
+ for(const nm of ["SPY","QQQ"]){
+  const d=em.assets[nm].rows[0],m=em.assets[nm].rows[2];
+  const brk=d.z<=-1;
+  f.stage[nm]={fire:brk,z:d.z};
+  /* backtest definition: z of the day vs PRIOR-day term structure (ratio at start of the window) */
+  f.combo[nm]={fire:brk&&!!f.inv&&f.inv.prevInverted,z:d.z};
+  if(nm==="QQQ")f.qqqCaution={fire:m.z<=-2,z:m.z,mv:m.mv}}
+ return f}
+function emFmtPct(x,dp){return(x>=0?"+":"−")+Math.abs(x*100).toFixed(dp==null?1:dp)+"%"}
+function emRender(){
+ const hdr='<div class="m" style="font-size:8px;color:var(--t4);letter-spacing:.5px;margin-bottom:9px">ADVISORY · DISPLAY ONLY · NOT SCORED · v18.5</div>';
+ const wrap=b=>`<div style="margin-top:12px;padding:11px 13px;background:rgba(255,255,255,.02);border-radius:8px;border:1px solid var(--bd)">${hdr}${b}</div>`;
+ const em=st.em;
+ if(!em)return wrap(`<div class="m" style="font-size:10px;font-weight:800;color:var(--t4)">VIX TERM STRUCTURE &amp; EXPECTED MOVE · unavailable</div><div style="font-size:10px;color:var(--t4);line-height:1.5;margin-top:3px">Could not load VIX / VIX3M / SPY / QQQ daily closes${st.emErr?" ("+String(st.emErr).replace(/</g,"&lt;")+")":""}. Badges hidden; nothing else on this page depends on this feed.</div>`);
+ const fl=emFlags(em);let o="";
+ const bd=(c,t)=>`<span class="m" style="font-size:10px;font-weight:800;color:${c}">${t}</span>`;
+ const note=t=>`<div style="font-size:10px;color:var(--t3);line-height:1.5;margin-top:3px">${t}</div>`;
+ const blk=(c,inner)=>`<div style="margin-bottom:10px;padding-left:9px;border-left:2px solid ${c}">${inner}</div>`;
+ /* 1. term structure */
+ if(fl.inv){const iv=fl.inv.inverted,c=iv?"var(--wn)":"var(--t4)";
+  o+=blk(c,`<div style="display:flex;align-items:baseline;gap:7px;flex-wrap:wrap">${bd(c,`VIX / VIX3M ${fl.inv.ratio.toFixed(2)} · ${iv?"INVERTED (VIX above 3-month VIX)":"contango (normal)"}`)}<span class="m" style="font-size:8px;color:var(--t5)">VIX ${em.ts.vix.toFixed(2)} · VIX3M ${em.ts.v3.toFixed(2)} · ${em.ts.date}</span></div>`+
+   note(iv?"When the curve is inverted, moves have run <b>bigger</b> than VIX implies. SPY daily realized/implied: 1.10 inverted vs 0.74 in contango; SPY stayed inside its 1SD range 67% of days inverted vs 83% in contango (QQQ 61% vs 73%). Treat the expected-move ranges below as a floor, not a ceiling.":"Curve is not inverted: realized moves have typically been smaller than VIX implies (SPY ~0.8× on average).")+
+   (fl.combo.SPY.fire||fl.combo.QQQ.fire?`<div style="margin-top:5px;padding:6px 9px;border-radius:6px;background:rgba(0,230,118,.07);border:1px solid rgba(0,230,118,.22);font-size:10px;color:var(--t2);line-height:1.5"><b>Combo active today: daily drop beyond −1SD while the curve was inverted</b> (${[fl.combo.SPY.fire?`SPY ${fl.combo.SPY.z.toFixed(1)}SD`:"",fl.combo.QQQ.fire?`QQQ ${fl.combo.QQQ.z.toFixed(1)}SD`:""].filter(Boolean).join(", ")}). The one pairing that has historically looked better — SPY (n=21): 63d +7.5% / 86% up vs +3.6% base; QQQ (n=23): 63d +11.3% / 91% up vs +4.8% base. <b>HYPOTHESIS · SMALL SAMPLE (~20 cases, clustered in a few episodes)</b> — advisory only, not a buy signal.</div>`:`<div class="m" style="font-size:8px;color:var(--t5);margin-top:4px">Combo (daily drop &lt; −1SD while inverted — SPY n=21 / QQQ n=23, hypothesis only) is not active today.</div>`))}
+ else o+=blk("var(--t4)",`${bd("var(--t4)","VIX / VIX3M · unavailable")}${note("VIX3M feed failed — term-structure badge hidden.")}`);
+ /* 2. gauge */
+ let g=`<div class="m" style="font-size:10px;font-weight:800;color:var(--ca)">EXPECTED-MOVE GAUGE · VIX ${em.assets.SPY.vixNow.toFixed(2)}</div>`+
+  note("Ranges use <b>today's</b> VIX (daily VIX/√252, weekly VIX/√(252/5), monthly VIX×√(21/252); QQQ ×1.2). “Actual” is the move over the last 1 / 5 / 21 trading days measured in SDs <b>of the VIX at the start of that window</b>. Informational — not a buy signal.");
+ for(const nm of ["SPY","QQQ"]){const a=em.assets[nm];
+  g+=`<div style="margin-top:8px"><div class="m" style="font-size:9px;font-weight:800;color:var(--t2)">${nm}${em.idx?(nm==="SPY"?" (S&amp;P 500 index)":" (NASDAQ-100 index)"):""} · ${a.last.toFixed(2)} · ${a.asOf}${nm==="QQQ"?" · ×1.2":""}</div>
+   <div style="overflow-x:auto"><table class="m" style="width:100%;border-collapse:collapse;font-size:9px;margin-top:3px"><tr style="color:var(--t5);text-align:left"><th style="padding:2px 4px;font-weight:600">Window</th><th style="padding:2px 4px;font-weight:600">±1SD</th><th style="padding:2px 4px;font-weight:600">±2SD</th><th style="padding:2px 4px;font-weight:600">Actual</th>${nm==="SPY"?'<th style="padding:2px 4px;font-weight:600">Typical realized ±</th>':""}</tr>`;
+  for(const r of a.rows){const zc=r.z<=-2?"var(--st)":r.z<=-1?"var(--wn)":r.z>=1?"var(--cl)":"var(--t3)";
+   g+=`<tr style="border-top:1px solid var(--bd);color:var(--t3);vertical-align:top"><td style="padding:3px 4px;color:var(--t2)">${r.tf.lab}</td>
+    <td style="padding:3px 4px">±${(r.sd*100).toFixed(1)}%<br><span style="color:var(--t5)">${r.r1[0].toFixed(0)}–${r.r1[1].toFixed(0)}</span></td>
+    <td style="padding:3px 4px">±${(r.sd*200).toFixed(1)}%<br><span style="color:var(--t5)">${r.r2[0].toFixed(0)}–${r.r2[1].toFixed(0)}</span></td>
+    <td style="padding:3px 4px;color:${zc}"><b>${emFmtPct(Math.exp(r.mv)-1)}</b><br>${r.z>=0?"+":"−"}${Math.abs(r.z).toFixed(1)}SD <span style="color:var(--t5)">(VIX ${r.startVix.toFixed(1)})</span></td>
+    ${nm==="SPY"?`<td style="padding:3px 4px">±${(r.sd*r.typ*100).toFixed(1)}%<br><span style="color:var(--t5)">${r.typ.toFixed(2)}× implied</span></td>`:""}</tr>`}
+  g+="</table></div></div>"}
+ g+=`<div style="font-size:9px;color:var(--t5);line-height:1.5;margin-top:6px"><b>Typical realized (SPY):</b> across 1993-2026 SPY has moved about 0.8× what VIX implies, so 1SD is breached only ~16-20% of the time rather than 32%. The haircut shrinks as VIX rises (VIX ${EM_BAND_LAB[emBand(em.assets.SPY.vixNow)]} band shown; daily ratio 0.71 below 15, 0.89 at 25-30, 1.09 above 40). QQQ has run ~1.2× VIX overall (used here), but that varies a lot by regime. Both price ranges are 1SD/2SD from the last close, not forecasts of direction. Source: ${em.src}.</div>`;
+ o+=blk("var(--ca)",g);
+ /* 3. staging note */
+ const stg=["SPY","QQQ"].filter(n=>fl.stage[n].fire);
+ if(stg.length)o+=blk("var(--wn)",`${bd("var(--wn)",`DAILY 1SD BREAK · ${stg.map(n=>`${n} ${fl.stage[n].z.toFixed(1)}SD`).join(" · ")} · SCALE IN`)}${note("1SD daily breaks <b>cluster</b>: after one, SPY had another within 21 trading days 87% of the time (QQQ 96%). Forward returns after a break have been about the same as on any random day, so buying the first break has usually meant buying before more downside. Stage entries rather than going all at once.")}`);
+ /* 4. QQQ deep-break caution */
+ if(fl.qqqCaution&&fl.qqqCaution.fire)o+=blk("var(--st)",`${bd("var(--st)",`⚠ QQQ DEEP-BREAK CAUTION · 21d ${emFmtPct(Math.exp(fl.qqqCaution.mv)-1)} · ${fl.qqqCaution.z.toFixed(1)}SD`)}${note("QQQ's 21-day move is beyond −2SD (vs VIX 21 trading days ago × 1.2). Historically that has <b>not</b> been a buy: 21d later −1.6% mean / 43% up, 63d later −3.2% / 48% up (1999-2026), dominated by the 2000-02 and 2008 crashes (few independent episodes). Caution, not a buy signal.")}`);
+ else if(fl.qqqCaution)o+=`<div class="m" style="font-size:8px;color:var(--t5);margin-bottom:6px">QQQ deep-break caution (21d move beyond −2SD) not active · now ${fl.qqqCaution.z.toFixed(1)}SD.</div>`;
+ return wrap(o)}
 
 /* Employment Context — display-only computation of net jobs change with
    federal/state+local breakdown and 6-bucket classification.
@@ -1197,9 +1305,9 @@ const defaultOv=()=>({score:true,leading:false,confirming:false,market:false,spx
 
 let st={key:localStorage.getItem("rr23")||null,d:{},mc:{},mcFull:{},ss:{},ex:{},mcEx:{},msdEx:false,empEx:false,fgEx:false,epuEx:false,rfmEx:false,ld:false,err:null,upd:null,px:0,pxName:null,fetchMsg:null,fetchN:0,cacheAge:null,al:{ycUD:null,ycInv:false,sahmD:null,sahmPk:null},cape:null,capeSource:null,capeFreshness:null,autoRef:null,clfRaw:null,claims4wk:null,clfRatio:null,vixRolling:null,postInvBonus:false,momentum:null,aaii:null,breadth:null,
  bt:{open:false,loading:false,loaded:false,data:null,stats:null,err:null,ov:defaultOv(),window:"max",csvData:null,csvLoaded:false}};
-function saveSnap(){try{localStorage.setItem("rr_snap_v18",JSON.stringify({t:Date.now(),d:st.d,mc:st.mc,mcFull:st.mcFull,ss:st.ss,al:st.al,cape:st.cape,capeSource:st.capeSource,capeFreshness:st.capeFreshness,clfRaw:st.clfRaw,claims4wk:st.claims4wk,clfRatio:st.clfRatio,vixRolling:st.vixRolling,aaii:st.aaii,fg:st.fg,breadth:st.breadth,momentum:st.momentum,crVelocity:st.crVelocity,postInvBonus:st.postInvBonus}))}catch{}}
+function saveSnap(){try{localStorage.setItem("rr_snap_v18",JSON.stringify({t:Date.now(),d:st.d,mc:st.mc,mcFull:st.mcFull,ss:st.ss,al:st.al,cape:st.cape,capeSource:st.capeSource,capeFreshness:st.capeFreshness,clfRaw:st.clfRaw,claims4wk:st.claims4wk,clfRatio:st.clfRatio,vixRolling:st.vixRolling,aaii:st.aaii,fg:st.fg,em:st.em,breadth:st.breadth,momentum:st.momentum,crVelocity:st.crVelocity,postInvBonus:st.postInvBonus}))}catch{}}
 function loadSnap(){try{const s=JSON.parse(localStorage.getItem("rr_snap_v18"));if(s&&s.d&&s.t)return s}catch{}return null}
-function applySnap(s){st.d=s.d||{};st.mc=s.mc||{};st.mcFull=s.mcFull||{};st.ss=s.ss||{};if(s.al)st.al=s.al;st.cape=s.cape;st.capeSource=s.capeSource;st.capeFreshness=s.capeFreshness||"cached";st.clfRaw=s.clfRaw;st.claims4wk=s.claims4wk;st.clfRatio=s.clfRatio;st.vixRolling=s.vixRolling;st.aaii=s.aaii;st.fg=s.fg;st.breadth=s.breadth;st.momentum=s.momentum;st.crVelocity=s.crVelocity;st.postInvBonus=s.postInvBonus;st.cacheAge=s.t;st.upd=new Date(s.t)}
+function applySnap(s){st.d=s.d||{};st.mc=s.mc||{};st.mcFull=s.mcFull||{};st.ss=s.ss||{};if(s.al)st.al=s.al;st.cape=s.cape;st.capeSource=s.capeSource;st.capeFreshness=s.capeFreshness||"cached";st.clfRaw=s.clfRaw;st.claims4wk=s.claims4wk;st.clfRatio=s.clfRatio;st.vixRolling=s.vixRolling;st.aaii=s.aaii;st.fg=s.fg;st.em=s.em||null;st.breadth=s.breadth;st.momentum=s.momentum;st.crVelocity=s.crVelocity;st.postInvBonus=s.postInvBonus;st.cacheAge=s.t;st.upd=new Date(s.t)}
 
 async function ff(sid,key,lim=24,freq=""){let base=`https://api.stlouisfed.org/fred/series/observations?series_id=${sid}&api_key=${key}&file_type=json&sort_order=desc&limit=${lim}`;if(freq)base+=`&frequency=${freq}&aggregation_method=eop`;const txt=await pxGet(base,12000);const j=extractJson(txt);if(!j)throw new Error(sid);if(j.error_message)throw new Error(sid+": "+j.error_message);const obs=j.observations;if(!obs)throw new Error(sid);return obs.filter(o=>o.value!==".").reverse()}
 async function fetchCAPE(){
@@ -1481,7 +1589,7 @@ async function loadAll(){
   await fetchCLF();
   calcVixRolling();
   calcBreadthProxy();
-  await Promise.allSettled([fetchAAII(),fetchFearGreed()]);
+  await Promise.allSettled([fetchAAII(),fetchFearGreed(),fetchExpectedMove()]);
   if(st.cape){st.d.cape=[{date:new Date().toISOString().split("T")[0],value:st.cape.toString()}];ok++}else st.d.cape=[];
   for(const s of S){const obs=st.d[s.k]||[];if(s.isCape){st.ss[s.k]=s.ev(st.cape);continue}if(s.tr){const v=obs.slice(-3).map(x=>parseFloat(x.value)).filter(x=>!isNaN(x));st.ss[s.k]=s.ev(null,v.length>=2?v[v.length-1]-v[0]:null)}else{let l=obs.length?parseFloat(obs[obs.length-1].value):null;if(s.divK&&l)l=l/1000;st.ss[s.k]=s.ev(isNaN(l)?null:l)}}
   st.al={...analyzeYC(st.d.yc||[]),...analyzeSahm(st.d.sa||[])};st.upd=new Date();
@@ -1809,6 +1917,7 @@ function render(){const a=document.getElementById("app");
       :"Building toward the 6-day threshold. No signal yet."}</div></div>`}
    out+='<div style="font-size:9px;color:var(--t5);line-height:1.5;padding-top:7px;border-top:1px solid var(--bd)"><b>Standing note:</b> defensive sectors did not protect in ANY regime cell tested. XLU returned -2.2% excess in YELLOW/downtrend and -2.7% in ORANGE/downtrend; SPLV and USMV were -3.5% and -2.6% excess when the gate was closed. In a confirmed downtrend the historical answer is cash, not utilities and staples.</div>';
    out+='</div>';return out})()}
+  ${emRender()}
   <div style="margin-top:14px;padding:12px 14px;background:${strat.color}12;border-radius:8px;border:1px solid ${strat.color}25">
    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><div style="width:10px;height:10px;border-radius:50%;background:${strat.color}"></div><span class="m" style="font-size:11px;font-weight:800;color:${strat.color}">${strat.label}</span></div>
    <p style="font-size:12px;color:var(--t2);line-height:1.6">${strat.text}</p></div></div>
@@ -2037,6 +2146,7 @@ function render(){const a=document.getElementById("app");
  <div class="lg"><div class="m" style="font-size:8px;color:var(--t5);line-height:1.6">
  <strong style="color:var(--t4)">Recession</strong> = 75% Leading (YC×45%+Credit×35%+Claims×20%) + 25% Confirming (Sahm×60%+Mfg×40%). YC scores <+0.5% as risk. Zones: 35/60/80. Backtested: F1 37, 6/6 caught, FP 39%.<br>
  <strong style="color:var(--t4)">Market</strong> = VIX 40% (Hybrid F symmetric — tiered absolute 13/12/11 + above-MA-gated z-gradient) + CAPE 25% (>35 STR SELL, 145yr, fallback cached) + Sent 35%.<br>
+ <strong style="color:var(--t4)">v18.5</strong>: <b>Advisory-only additions from the Rule-of-16 study (0 weight in every score)</b> — (1) VIX/VIX3M term-structure badge (inverted = moves run bigger than VIX implies; daily drop &lt;−1SD while inverted flagged as a small-sample hypothesis: SPY n=21, QQQ n=23). (2) Expected-move gauge for SPY/QQQ, daily/weekly/monthly: ±1SD/±2SD range in % and price from current VIX (QQQ ×1.2), actual move in SDs vs VIX at window start, SPY typical-realized (~0.8× implied) note. (3) Scale-in note when a daily 1SD break fires (breaks cluster: SPY 87%, QQQ 96% have another within 21d). (4) QQQ deep-break caution (21d move beyond −2SD: 21d −1.6%/43% up, 63d −3.2%/48% up — not a buy). Feed: Yahoo chart JSON via the existing proxy chain, FRED fallback; badges hide with an “unavailable” note if both fail. Scoring unchanged from v18.4.<br>
  <strong style="color:var(--t4)">v18.4</strong>: <b>Validation fixes (2011-2026, episode-deduped)</b> — F&amp;G Capitulation now counts F&amp;G≤25 days in last 20 (≥15 → −0.2; with VIX≥30 → −0.5), old 10-day streak dropped; live 20-day count shown on F&amp;G card. F&amp;G Greed Warning weight 0 (froth badge only). Low-VIX &lt;13/12/11 tiers demoted to advisory (0 score; trim individual names). New −0.5 when VIX≥35 three days running. Advisory badges: F&amp;G turn-up, F&amp;G≤25 + S&amp;P −10%. Strategy-matrix copy re-based on clean month-end prices; F&amp;G stats now episode counts (old n=158 counted overlapping days).<br>
  <strong style="color:var(--t4)">v18.3</strong>: <b>Shared scoring kernel</b> — live dashboard and in-dashboard backtest now call the same functions (Hybrid F VIX, 55/25/20 weights, VIX-only override, ECY, bear damp, recession composite). The backtest had drifted to v17 weights (40/35) and the ungated VIX z-ladder. Scoring formulas unchanged; backtest now reports the model that is actually running. Original v18.2 file kept as recession-radar_V18_2_ORIGINAL.html.<br>
  <strong style="color:var(--t4)">v18.2</strong>: <b>Fetch fix</b> — GitHub Pages was stuck on "Fetching..." because corsproxy.io now requires a paid key (localhost-only free), allorigins/codetabs hang until timeout, and FRED itself has no CORS. Switched to Jina HTML proxy first, fail-fast (~4–12s per call instead of 45s), parallelized series loads, cached last-good snapshot in localStorage so the dashboard still opens if live fetch dies.<br>
